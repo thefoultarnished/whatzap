@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 )
 
 const backendStartupLogLimit = 8192
+const apiTokenEnvVar = "WHATZAP_API_TOKEN"
+const authHeaderName = "Authorization"
 
 type limitedBuffer struct {
 	mu    sync.Mutex
@@ -50,9 +53,12 @@ func formatBackendStartupError(prefix string, raw string) error {
 	return fmt.Errorf("%s: %s", prefix, msg)
 }
 
-func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
+func ensureBackend(c *http.Client, base, dir, apiToken string) tea.Cmd {
 	return func() tea.Msg {
 		if health(c, base) == nil {
+			if err := probeAuth(c, base, apiToken); err != nil {
+				return initMsg{err: err}
+			}
 			return initMsg{}
 		}
 		goBin := "go"
@@ -61,6 +67,7 @@ func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
 		}
 		cmd := exec.Command(goBin, "run", ".")
 		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), apiTokenEnvVar+"="+apiToken)
 		logBuf := &limitedBuffer{limit: backendStartupLogLimit}
 		cmd.Stdout = logBuf
 		cmd.Stderr = logBuf
@@ -74,6 +81,9 @@ func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
 		deadline := time.Now().Add(35 * time.Second)
 		for time.Now().Before(deadline) {
 			if health(c, base) == nil {
+				if err := probeAuth(c, base, apiToken); err != nil {
+					return initMsg{err: err}
+				}
 				return initMsg{started: true, cmd: cmd}
 			}
 			select {
@@ -102,9 +112,30 @@ func health(c *http.Client, base string) error {
 	}
 	return nil
 }
-func openWS(url string) tea.Cmd {
+
+func probeAuth(c *http.Client, base, apiToken string) error {
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/contacts", nil)
+	attachAuthHeader(req, apiToken)
+	res, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("backend is running with a different API token; stop the stale backend and retry")
+	}
+	if res.StatusCode/100 != 2 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("backend auth probe failed: %s %s", res.Status, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
+func openWS(url, apiToken string) tea.Cmd {
 	return func() tea.Msg {
-		conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+		header := http.Header{}
+		header.Set(authHeaderName, "Bearer "+apiToken)
+		conn, _, err := websocket.DefaultDialer.Dial(url, header)
 		if err != nil {
 			return wsOpenMsg{err: err}
 		}
@@ -137,6 +168,7 @@ func postJSON(c *http.Client, url string, body any, ok func([]byte) tea.Msg) tea
 		b, _ := json.Marshal(body)
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(url))
 		res, err := c.Do(req)
 		if err != nil {
 			return dataErr{err: err}
@@ -158,6 +190,7 @@ func logout(c *http.Client, base string) tea.Cmd {
 		b, _ := json.Marshal(map[string]string{})
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/logout", bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return logoutMsg{err: err}
@@ -189,6 +222,7 @@ func logout(c *http.Client, base string) tea.Cmd {
 func getChats(c *http.Client, base string) tea.Cmd {
 	return func() tea.Msg {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/chats", nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return chatsMsg{err: err}
@@ -206,6 +240,7 @@ func getChats(c *http.Client, base string) tea.Cmd {
 func getContacts(c *http.Client, base string) tea.Cmd {
 	return func() tea.Msg {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/contacts", nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return contactsMsg{err: err}
@@ -224,6 +259,7 @@ func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
 	return func() tea.Msg {
 		u := fmt.Sprintf("%s/messages?chatId=%s&limit=%d", base, chatID, limit)
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return msgsMsg{chatID: chatID, err: err}
@@ -256,6 +292,7 @@ func send(c *http.Client, base, chatID, text string, replyTo *wireMsg) tea.Cmd {
 		b, _ := json.Marshal(payload)
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/messages/send", bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return sentMsg{chatID: chatID, err: err}
@@ -286,6 +323,7 @@ func sendFile(c *http.Client, base, chatID, kind, path, caption string) tea.Cmd 
 		b, _ := json.Marshal(payload)
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/messages/send-file", bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return sentMsg{chatID: chatID, err: err}
@@ -324,6 +362,7 @@ func (x m) cleanup() {
 func getWhitelist(c *http.Client, base string) tea.Cmd {
 	return func() tea.Msg {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/whitelist", nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return whitelistLoadMsg{err: err}
@@ -357,6 +396,7 @@ func downloadMedia(c *http.Client, base, chatID, msgID string) tea.Cmd {
 	return func() tea.Msg {
 		url := base + "/media/download?chatId=" + chatID + "&msgId=" + msgID
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return mediaDownloadMsg{err: err}
@@ -395,6 +435,7 @@ func setName(c *http.Client, base, phone, name string) tea.Cmd {
 		b, _ := json.Marshal(map[string]any{"phone": phone, "name": name})
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/names/set", bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return whitelistSetMsg{err: err}
@@ -409,6 +450,7 @@ func setWhitelistEntry(c *http.Client, base, phone, name string, allowed int) te
 		b, _ := json.Marshal(map[string]any{"phone": phone, "name": name, "allowed": allowed})
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/whitelist/set", bytes.NewReader(b))
 		req.Header.Set("content-type", "application/json")
+		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
 			return whitelistSetMsg{err: err}
@@ -420,6 +462,17 @@ func setWhitelistEntry(c *http.Client, base, phone, name string, allowed int) te
 		}
 		return whitelistSetMsg{}
 	}
+}
+
+func attachAuthHeader(req *http.Request, apiToken string) {
+	if req == nil || apiToken == "" {
+		return
+	}
+	req.Header.Set(authHeaderName, "Bearer "+apiToken)
+}
+
+func apiTokenFromURL(base string) string {
+	return strings.TrimSpace(os.Getenv(apiTokenEnvVar))
 }
 
 func syncContacts(c *http.Client, base string) tea.Cmd {

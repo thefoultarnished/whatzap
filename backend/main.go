@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -10,9 +11,12 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -102,6 +106,8 @@ type App struct {
 	cachePath string
 	state     PersistedState
 
+	apiToken string
+
 	wsMu      sync.Mutex
 	wsClients map[*websocket.Conn]struct{}
 
@@ -109,6 +115,9 @@ type App struct {
 }
 
 const maxUploadBytes = 100 * 1024 * 1024
+const appDataDirName = "WhatZAP"
+const apiTokenEnvVar = "WHATZAP_API_TOKEN"
+const authHeaderName = "Authorization"
 
 func main() {
 	app, err := NewApp()
@@ -116,40 +125,135 @@ func main() {
 		log.Fatalf("init failed: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", app.handleHealth)
-	mux.HandleFunc("/ws", app.handleWS)
-	mux.HandleFunc("/start", app.handleStart)
-	mux.HandleFunc("/chats", app.handleChats)
-	mux.HandleFunc("/contacts", app.handleContacts)
-	mux.HandleFunc("/resolve/lidpn", app.handleResolveLIDPN)
-	mux.HandleFunc("/sync/contacts", app.handleSyncContacts)
-	mux.HandleFunc("/sync/groups", app.handleSyncGroups)
-	mux.HandleFunc("/messages", app.handleMessages)
-	mux.HandleFunc("/messages/send", app.handleSendMessage)
-	mux.HandleFunc("/messages/send-file", app.handleSendFile)
-	mux.HandleFunc("/messages/read", app.handleMarkRead)
-	mux.HandleFunc("/profile-picture", app.handleProfilePicture)
-	mux.HandleFunc("/logout", app.handleLogout)
-	mux.HandleFunc("/whitelist", app.handleGetWhitelist)
-	mux.HandleFunc("/whitelist/set", app.handleSetWhitelist)
-	mux.HandleFunc("/names/set", app.handleSetName)
-	mux.HandleFunc("/media/download", app.handleMediaDownload)
-
 	addr := "127.0.0.1:8787"
 	log.Printf("whatsmeow backend listening on http://%s", addr)
-	if err := http.ListenAndServe(addr, withCORS(mux)); err != nil {
+	if err := http.ListenAndServe(addr, app.handler()); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
 
+func whatzapDataRoot() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("WHATZAP_DATA_DIR")); override != "" {
+		return filepath.Clean(override), nil
+	}
+	if base := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); base != "" {
+		return filepath.Join(base, appDataDirName), nil
+	}
+	if base, err := os.UserConfigDir(); err == nil && strings.TrimSpace(base) != "" {
+		return filepath.Join(base, appDataDirName), nil
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".whatzap"), nil
+	}
+	return "", fmt.Errorf("failed to resolve app data directory")
+}
+
+func resolveBackendCacheDir(workDir string) (string, error) {
+	dataRoot, err := whatzapDataRoot()
+	if err != nil {
+		return "", err
+	}
+	cacheDir := filepath.Join(dataRoot, "backend")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return "", err
+	}
+
+	legacyDir := filepath.Join(workDir, ".whatsmeow_cache")
+	shouldMigrate, err := shouldMigrateLegacyDir(cacheDir, legacyDir)
+	if err != nil {
+		return "", err
+	}
+	if shouldMigrate {
+		if err := copyDirContents(legacyDir, cacheDir); err != nil {
+			return "", err
+		}
+	}
+
+	return cacheDir, nil
+}
+
+func shouldMigrateLegacyDir(targetDir, legacyDir string) (bool, error) {
+	if filepath.Clean(targetDir) == filepath.Clean(legacyDir) {
+		return false, nil
+	}
+	info, err := os.Stat(legacyDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, nil
+	}
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
+func copyDirContents(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
+				return err
+			}
+			if err := copyDirContents(srcPath, dstPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if err := copyFile(srcPath, dstPath, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFile(srcPath, dstPath string, perm os.FileMode) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
 func NewApp() (*App, error) {
-	projectRoot, err := os.Getwd()
+	apiToken := strings.TrimSpace(os.Getenv(apiTokenEnvVar))
+	if apiToken == "" {
+		return nil, fmt.Errorf("%s must be set", apiTokenEnvVar)
+	}
+	workDir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	cacheDir := filepath.Join(projectRoot, ".whatsmeow_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	cacheDir, err := resolveBackendCacheDir(workDir)
+	if err != nil {
 		return nil, err
 	}
 	cachePath := filepath.Join(cacheDir, "state.json")
@@ -181,6 +285,7 @@ func NewApp() (*App, error) {
 		client:    client,
 		db:        rawDB,
 		cachePath: cachePath,
+		apiToken:  apiToken,
 		wsClients: map[*websocket.Conn]struct{}{},
 		state: PersistedState{
 			Chats:    map[string]Chat{},
@@ -191,6 +296,74 @@ func NewApp() (*App, error) {
 	app.loadState()
 	app.bindEvents()
 	return app, nil
+}
+
+func (a *App) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/ws", a.handleWS)
+	mux.HandleFunc("/start", a.handleStart)
+	mux.HandleFunc("/chats", a.handleChats)
+	mux.HandleFunc("/contacts", a.handleContacts)
+	mux.HandleFunc("/resolve/lidpn", a.handleResolveLIDPN)
+	mux.HandleFunc("/sync/contacts", a.handleSyncContacts)
+	mux.HandleFunc("/sync/groups", a.handleSyncGroups)
+	mux.HandleFunc("/messages", a.handleMessages)
+	mux.HandleFunc("/messages/send", a.handleSendMessage)
+	mux.HandleFunc("/messages/send-file", a.handleSendFile)
+	mux.HandleFunc("/messages/read", a.handleMarkRead)
+	mux.HandleFunc("/profile-picture", a.handleProfilePicture)
+	mux.HandleFunc("/logout", a.handleLogout)
+	mux.HandleFunc("/whitelist", a.handleGetWhitelist)
+	mux.HandleFunc("/whitelist/set", a.handleSetWhitelist)
+	mux.HandleFunc("/names/set", a.handleSetName)
+	mux.HandleFunc("/media/download", a.handleMediaDownload)
+	return withCORS(a.withAuth(mux))
+}
+
+func (a *App) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions || r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !a.isAuthorized(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) isAuthorized(r *http.Request) bool {
+	authz := strings.TrimSpace(r.Header.Get(authHeaderName))
+	if !strings.HasPrefix(authz, "Bearer ") {
+		return false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+	if token == "" || a.apiToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(a.apiToken)) == 1
+}
+
+func isAllowedOrigin(origin string) bool {
+	if strings.TrimSpace(origin) == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (a *App) bindEvents() {
@@ -638,7 +811,13 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		return isAllowedOrigin(origin)
+	},
 }
 
 func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -1387,6 +1566,51 @@ func toWireMessage(evt *events.Message) WireMessage {
 	info := evt.Info
 	chatID := info.Chat.String()
 	effective := effectiveMessage(evt.Message)
+	msg, mediaProto := wireMessagePayload(evt.Message, effective)
+
+	key := WireKey{
+		ID:        info.ID,
+		RemoteJID: chatID,
+		FromMe:    info.IsFromMe,
+	}
+	if info.IsGroup {
+		key.Participant = info.Sender.String()
+	}
+
+	return WireMessage{
+		Key:              key,
+		Message:          msg,
+		MessageTimestamp: info.Timestamp.Unix(),
+		PushName:         evt.Info.PushName,
+		MediaProto:       mediaProto,
+	}
+}
+
+func toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage {
+	if webMsg == nil {
+		return WireMessage{}
+	}
+	m := effectiveMessage(webMsg.GetMessage())
+	out, mediaProto := wireMessagePayload(webMsg.GetMessage(), m)
+
+	key := webMsg.GetKey()
+	wireKey := WireKey{
+		ID:          key.GetID(),
+		RemoteJID:   key.GetRemoteJID(),
+		FromMe:      key.GetFromMe(),
+		Participant: key.GetParticipant(),
+	}
+
+	return WireMessage{
+		Key:              wireKey,
+		Message:          out,
+		MessageTimestamp: int64(webMsg.GetMessageTimestamp()),
+		PushName:         webMsg.GetPushName(),
+		MediaProto:       mediaProto,
+	}
+}
+
+func wireMessagePayload(raw, effective *waProto.Message) (map[string]any, string) {
 	msg := map[string]any{}
 	var mediaProto string
 	if txt := effective.GetConversation(); txt != "" {
@@ -1421,13 +1645,15 @@ func toWireMessage(evt *events.Message) WireMessage {
 			"targetMsgID": rxn.GetKey().GetID(),
 		}
 	}
+	if protocol := protocolMessagePayload(raw, effective); protocol != nil {
+		msg["protocolMessage"] = protocol
+	}
 	if len(msg) == 0 {
 		msg["unknown"] = map[string]any{
-			"rawFields":       messageFieldNames(evt.Message),
+			"rawFields":       messageFieldNames(raw),
 			"effectiveFields": messageFieldNames(effective),
 		}
 	}
-	// save media proto so we can download it later
 	isMedia := effective.GetImageMessage() != nil || effective.GetVideoMessage() != nil ||
 		effective.GetDocumentMessage() != nil || effective.GetAudioMessage() != nil ||
 		effective.GetStickerMessage() != nil
@@ -1436,93 +1662,36 @@ func toWireMessage(evt *events.Message) WireMessage {
 			mediaProto = base64.StdEncoding.EncodeToString(b)
 		}
 	}
-
-	key := WireKey{
-		ID:        info.ID,
-		RemoteJID: chatID,
-		FromMe:    info.IsFromMe,
-	}
-	if info.IsGroup {
-		key.Participant = info.Sender.String()
-	}
-
-	return WireMessage{
-		Key:              key,
-		Message:          msg,
-		MessageTimestamp: info.Timestamp.Unix(),
-		PushName:         evt.Info.PushName,
-		MediaProto:       mediaProto,
-	}
+	return msg, mediaProto
 }
 
-func toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage {
-	if webMsg == nil {
-		return WireMessage{}
+func protocolMessagePayload(raw, effective *waProto.Message) map[string]any {
+	var protocol *waProto.ProtocolMessage
+	switch {
+	case effective != nil && effective.GetProtocolMessage() != nil:
+		protocol = effective.GetProtocolMessage()
+	case raw != nil && raw.GetProtocolMessage() != nil:
+		protocol = raw.GetProtocolMessage()
+	default:
+		return nil
 	}
-	m := effectiveMessage(webMsg.GetMessage())
-	out := map[string]any{}
-	var mediaProto string
-	if txt := m.GetConversation(); txt != "" {
-		out["conversation"] = txt
+	out := map[string]any{
+		"type": protocol.GetType().String(),
 	}
-	if ext := m.GetExtendedTextMessage(); ext != nil {
-		entry := map[string]any{"text": ext.GetText()}
-		if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
-			entry["quotedText"] = quotedText(ctx.GetQuotedMessage())
-			entry["quotedParticipant"] = ctx.GetParticipant()
-		}
-		out["extendedTextMessage"] = entry
-	}
-	if img := m.GetImageMessage(); img != nil {
-		out["imageMessage"] = map[string]any{"caption": img.GetCaption(), "mimetype": img.GetMimetype()}
-	}
-	if vid := m.GetVideoMessage(); vid != nil {
-		out["videoMessage"] = map[string]any{"caption": vid.GetCaption(), "mimetype": vid.GetMimetype()}
-	}
-	if doc := m.GetDocumentMessage(); doc != nil {
-		out["documentMessage"] = map[string]any{"caption": doc.GetCaption(), "fileName": doc.GetFileName(), "mimetype": doc.GetMimetype()}
-	}
-	if aud := m.GetAudioMessage(); aud != nil {
-		out["audioMessage"] = map[string]any{"ptt": aud.GetPTT(), "mimetype": aud.GetMimetype()}
-	}
-	if stk := m.GetStickerMessage(); stk != nil {
-		out["stickerMessage"] = map[string]any{"mimetype": stk.GetMimetype()}
-	}
-	if rxn := m.GetReactionMessage(); rxn != nil {
-		out["reactionMessage"] = map[string]any{
-			"emoji":       rxn.GetText(),
-			"targetMsgID": rxn.GetKey().GetID(),
+	if key := protocol.GetKey(); key != nil {
+		if id := key.GetID(); id != "" {
+			out["targetMsgID"] = id
 		}
 	}
-	if len(out) == 0 {
-		out["unknown"] = map[string]any{
-			"rawFields":       messageFieldNames(webMsg.GetMessage()),
-			"effectiveFields": messageFieldNames(m),
+	if timer := protocol.GetEphemeralExpiration(); timer > 0 {
+		out["ephemeralExpiration"] = timer
+	}
+	if edited := protocol.GetEditedMessage(); edited != nil {
+		if text := quotedText(edited); text != "" {
+			out["editedText"] = text
 		}
 	}
-	isMedia := m.GetImageMessage() != nil || m.GetVideoMessage() != nil ||
-		m.GetDocumentMessage() != nil || m.GetAudioMessage() != nil || m.GetStickerMessage() != nil
-	if isMedia {
-		if b, err := proto.Marshal(m); err == nil {
-			mediaProto = base64.StdEncoding.EncodeToString(b)
-		}
-	}
-
-	key := webMsg.GetKey()
-	wireKey := WireKey{
-		ID:          key.GetID(),
-		RemoteJID:   key.GetRemoteJID(),
-		FromMe:      key.GetFromMe(),
-		Participant: key.GetParticipant(),
-	}
-
-	return WireMessage{
-		Key:              wireKey,
-		Message:          out,
-		MessageTimestamp: int64(webMsg.GetMessageTimestamp()),
-		PushName:         webMsg.GetPushName(),
-		MediaProto:       mediaProto,
-	}
+	return out
 }
 
 func effectiveMessage(msg *waProto.Message) *waProto.Message {
@@ -1735,7 +1904,59 @@ func (a *App) persistStateWithErr() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(a.cachePath, b, 0o644)
+	return writeFileAtomic(a.cachePath, b, 0o644)
+}
+
+// Atomic write for persisted state files.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return removeErr
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			return err
+		}
+	}
+	if runtime.GOOS != "windows" {
+		if dirHandle, err := os.Open(dir); err == nil {
+			_ = dirHandle.Sync()
+			_ = dirHandle.Close()
+		}
+	}
+	return nil
 }
 
 func reconcileChatTimestamps(state *PersistedState) bool {
@@ -2271,10 +2492,18 @@ func quotedText(m *waProto.Message) string {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "content-type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		w.Header().Add("Vary", "Origin")
+		if isAllowedOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Headers", "authorization,content-type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		}
 		if r.Method == http.MethodOptions {
+			if origin != "" && !isAllowedOrigin(origin) {
+				writeErr(w, http.StatusForbidden, "origin not allowed")
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

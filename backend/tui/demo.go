@@ -81,6 +81,8 @@ func (x *m) loadDemoState() {
 	x.active = x.chats[0].ID
 	x.sel = 0
 	x.scroll = 0
+	x.rebuildContactIndex()
+	x.markIdentityChanged()
 	x.mainCache.result = ""
 }
 

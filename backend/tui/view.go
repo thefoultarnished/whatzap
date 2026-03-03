@@ -88,6 +88,7 @@ func (x m) View() string {
 		replyToID:    replyToID,
 		selectedMsg:  x.selectedMsgID,
 		contactCount: len(x.contacts) + len(x.names),
+		identityVer:  x.identityVersion,
 	}
 	var main string
 	if x.emojiPickerOpen {
@@ -228,12 +229,13 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	trimmedInput := strings.TrimSpace(typedInput)
 	isCmd := strings.HasPrefix(trimmedInput, "/")
 	rightFocused := x.mode == "chat" && !x.sidebarFocused && !x.leftInputFocused
+	inputLocked := x.chatInputLocked()
 	inputGhost := ""
-	if rightFocused && !x.inputAllSelected {
+	if rightFocused && !inputLocked && !x.inputAllSelected {
 		inputGhost = chatInputGhost(typedInput)
 	}
 
-	showSend := hasVisibleText(typedInput) && !isCmd && rightFocused
+	showSend := hasVisibleText(typedInput) && !isCmd && rightFocused && !inputLocked
 	sendBadge := ""
 	sendBadgeW := 0
 	if showSend {
@@ -243,7 +245,9 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 
 	textAreaW := max(1, rightW-1-sendBadgeW)
 	var inputDisplay string
-	if x.inputAllSelected {
+	if inputLocked {
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  blacklisted | Ctrl+K then /whitelist")
+	} else if x.inputAllSelected {
 		inputDisplay = lipgloss.NewStyle().Foreground(text).Render("") +
 			lipgloss.NewStyle().Foreground(buttonInk).Background(accent).Render(typedInput)
 	} else {
@@ -268,6 +272,8 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	}
 	if x.mode == "nav" || (x.mode == "chat" && x.sidebarFocused) {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Ctrl+K for commands | Tab to focus")
+	} else if inputLocked {
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  blacklisted | Ctrl+K then /whitelist")
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E for emoji")
 	}
@@ -464,6 +470,30 @@ func chatMessageWrapWidth(w int, msg string) int {
 	return max(8, base-countEmojiHeuristic(msg))
 }
 
+func wrapMessageLines(msgBody string, availableW int, fromMe bool, senderName string) []string {
+	if fromMe {
+		return strings.Split(wrapText(msgBody, availableW), "\n")
+	}
+	prefixWidth := runeDisplayWidth(senderName + ": ")
+	return strings.Split(wrapTextWithPrefix(msgBody, availableW, prefixWidth), "\n")
+}
+
+func renderStyledMessageText(
+	ln string,
+	bodyStyle lipgloss.Style,
+	tokenStyle lipgloss.Style,
+	isMediaMsg bool,
+) string {
+	if isMediaMsg && strings.HasPrefix(ln, "[") {
+		if end := strings.Index(ln, "]"); end > 0 {
+			token := ln[:end+1]
+			rest := ln[end+1:]
+			return tokenStyle.Render(token) + bodyStyle.Render(rest)
+		}
+	}
+	return bodyStyle.Render(ln)
+}
+
 func outgoingMessageIndent(paneW int, blockW int, fromMe bool) string {
 	if !fromMe {
 		return ""
@@ -546,7 +576,7 @@ func (x m) renderMain(w, h int) string {
 
 		availableW := chatMessageWrapWidth(w, msgBody)
 
-		wrapped := strings.Split(wrapText(msgBody, availableW), "\n")
+		wrapped := wrapMessageLines(msgBody, availableW, msg.Key.FromMe, senderName)
 
 		bodyColor := sentText
 		if !msg.Key.FromMe {
@@ -653,38 +683,32 @@ func (x m) renderMain(w, h int) string {
 		}
 		indent := outgoingMessageIndent(max(1, w-2), outgoingBlockW, msg.Key.FromMe)
 		for i, ln := range wrapped {
-			bodyLine := ln
-			if isMediaMsg && strings.HasPrefix(ln, "[") {
-				if end := strings.Index(ln, "]"); end > 0 {
-					token := ln[:end+1]
-					rest := ln[end+1:]
-					tokenStyle := applySelectedBG(lipgloss.NewStyle().
-						Foreground(tagInk).
-						Background(mediaTokenBG).
-						Bold(true))
-					bodyLine = tokenStyle.Render(token) + rest
-				}
-			}
+			bodyStyle := applySelectedBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing))
+			tokenStyle := applySelectedBG(lipgloss.NewStyle().
+				Foreground(tagInk).
+				Background(mediaTokenBG).
+				Bold(true))
+			lineParts := []string{}
 			if !msg.Key.FromMe && i == 0 {
-				namePrefix := applySelectedBG(lipgloss.NewStyle().
+				lineParts = append(lineParts, applySelectedBG(lipgloss.NewStyle().
 					Foreground(receivedName).
 					Bold(true)).
-					Render(senderName + ": ")
-				bodyLine = namePrefix + bodyLine
+					Render(senderName+": "))
 			}
+			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg))
 			if i == len(wrapped)-1 {
 				if reactionStr != "" {
-					bodyLine += " " + reactionStr
+					lineParts = append(lineParts, " ", reactionStr)
 				}
-				bodyLine += timeStyled
+				lineParts = append(lineParts, timeStyled)
 			}
 			if msg.Key.FromMe {
-				bodyLine += " "
+				lineParts = append(lineParts, bodyStyle.Render(" "))
 			}
-			bodyStyled := applySelectedBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing)).Render(bodyLine)
+			bodyStyled := strings.Join(lineParts, "")
 			if msg.Key.FromMe {
 				if isMediaMsg {
-					bodyStyled = applySelectedBG(lipgloss.NewStyle().Width(max(1, w-2)).Align(lipgloss.Right).Foreground(bodyColor).Bold(isFlashing)).Render(bodyLine)
+					bodyStyled = lipgloss.NewStyle().Width(max(1, w-2)).Align(lipgloss.Right).Render(bodyStyled)
 				} else {
 					bodyStyled = indent + bodyStyled
 				}
@@ -857,10 +881,7 @@ func (x m) name(c chat) string {
 		}
 	}
 	n := num(c.ID)
-	for _, ct := range x.contacts {
-		if num(ct.ID) != n {
-			continue
-		}
+	if ct, ok := x.contactsByNumber[n]; ok {
 		if strings.TrimSpace(ct.Notify) != "" {
 			return ct.Notify
 		}
@@ -914,7 +935,11 @@ func (x m) msgIDAtLine(lineIdx, w, h int) string {
 			mb = "[media]"
 		}
 		availableW := chatMessageWrapWidth(w, mb)
-		wrapped := strings.Split(wrapText(mb, availableW), "\n")
+		senderName := "Me"
+		if !msg.Key.FromMe {
+			senderName = truncate(x.senderNameForMsg(msg), 12)
+		}
+		wrapped := wrapMessageLines(mb, availableW, msg.Key.FromMe, senderName)
 		hasQuote := false
 		if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
 			if qt, _ := ext["quotedText"].(string); qt != "" {
@@ -993,7 +1018,11 @@ func (x m) atReplyMsg(w, h int, label string) *wireMsg {
 			mb = "[media]"
 		}
 		availableW := chatMessageWrapWidth(w, mb)
-		wrapped := strings.Split(wrapText(mb, availableW), "\n")
+		senderName := "Me"
+		if !msg.Key.FromMe {
+			senderName = truncate(x.senderNameForMsg(msg), 12)
+		}
+		wrapped := wrapMessageLines(mb, availableW, msg.Key.FromMe, senderName)
 		hasQuote := false
 		if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
 			if qt, _ := ext["quotedText"].(string); qt != "" {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -32,9 +33,46 @@ func truncate(s string, n int) string {
 	return string(r[:n-3]) + "..."
 }
 
+func whatzapDataRoot() string {
+	if override := strings.TrimSpace(os.Getenv("WHATZAP_DATA_DIR")); override != "" {
+		return filepath.Clean(override)
+	}
+	if runtime.GOOS == "windows" {
+		if base := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); base != "" {
+			return filepath.Join(base, "WhatZAP")
+		}
+	}
+	if base, err := os.UserConfigDir(); err == nil && strings.TrimSpace(base) != "" {
+		return filepath.Join(base, "WhatZAP")
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".whatzap")
+	}
+	return "."
+}
+
+func resolveConfigPath() string {
+	root := whatzapDataRoot()
+	dir := filepath.Join(root, "tui")
+	_ = os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "config.json")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	legacyPath := filepath.Join(home, ".whatzap_tui_config.json")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	if data, err := os.ReadFile(legacyPath); err == nil {
+		_ = os.WriteFile(path, data, 0o644)
+	}
+	return path
+}
+
 func saveConfig() {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".whatzap_tui_config.json")
+	path := resolveConfigPath()
 	data, _ := json.Marshal(currentConfig)
 	_ = os.WriteFile(path, data, 0644)
 }
@@ -44,8 +82,7 @@ func loadConfig() {
 		ThemeName:    "tokyonight",
 		MouseEnabled: true,
 	}
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".whatzap_tui_config.json")
+	path := resolveConfigPath()
 	data, err := os.ReadFile(path)
 	if err == nil {
 		_ = json.Unmarshal(data, &currentConfig)
@@ -187,6 +224,63 @@ func wrapText(s string, width int) string {
 			} else {
 				lines = append(lines, cur)
 				cur = chunk
+			}
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func wrapTextWithPrefix(s string, width, prefixWidth int) string {
+	if prefixWidth <= 0 {
+		return wrapText(s, width)
+	}
+	if width < 4 {
+		return s
+	}
+	chunkWord := func(w string, lineWidth int) []string {
+		r := []rune(w)
+		var out []string
+		start := 0
+		cur := 0
+		for i := range r {
+			cw := runeDisplayWidth(string(r[i : i+1]))
+			if cur+cw > lineWidth && i > start {
+				out = append(out, string(r[start:i]))
+				start = i
+				cur = 0
+			}
+			cur += cw
+		}
+		if start < len(r) {
+			out = append(out, string(r[start:]))
+		}
+		return out
+	}
+
+	firstWidth := max(4, width-prefixWidth)
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, 4)
+	cur := ""
+	lineWidth := firstWidth
+	for _, w := range words {
+		chunks := chunkWord(w, lineWidth)
+		for _, chunk := range chunks {
+			if cur == "" {
+				cur = chunk
+				continue
+			}
+			if runeDisplayWidth(cur)+1+runeDisplayWidth(chunk) <= lineWidth {
+				cur += " " + chunk
+			} else {
+				lines = append(lines, cur)
+				cur = chunk
+				lineWidth = width
 			}
 		}
 	}
@@ -355,6 +449,11 @@ func renderMessageBody(m map[string]any) string {
 		}
 		return "[reaction]"
 	}
+	if v, ok := m["protocolMessage"].(map[string]any); ok {
+		if label := renderProtocolMessage(v); label != "" {
+			return label
+		}
+	}
 	if v, ok := m["unknown"].(map[string]any); ok {
 		if label := unknownMessageLabel(v); label != "" {
 			return renderUnknownTag(label)
@@ -376,6 +475,62 @@ func renderMediaSummary(tag string, payload map[string]any) string {
 		parts = append(parts, caption)
 	}
 	return strings.Join(parts, " ")
+}
+
+func renderProtocolMessage(v map[string]any) string {
+	typ, _ := v["type"].(string)
+	switch strings.TrimSpace(typ) {
+	case "REVOKE":
+		return anomalyTagStyle.Render("[message deleted]")
+	case "MESSAGE_EDIT":
+		if edited, _ := v["editedText"].(string); strings.TrimSpace(edited) != "" {
+			return anomalyTagStyle.Render("[message edited]") + " " + edited
+		}
+		return anomalyTagStyle.Render("[message edited]")
+	case "EPHEMERAL_SETTING":
+		if seconds, ok := protocolUint(v["ephemeralExpiration"]); ok {
+			return anomalyTagStyle.Render("[disappearing messages]") + " " + formatEphemeralDuration(seconds)
+		}
+		return anomalyTagStyle.Render("[disappearing messages changed]")
+	default:
+		if typ == "" {
+			return ""
+		}
+		return anomalyTagStyle.Render("[system: " + strings.ToLower(strings.ReplaceAll(typ, "_", " ")) + "]")
+	}
+}
+
+func protocolUint(v any) (uint64, bool) {
+	switch n := v.(type) {
+	case uint64:
+		return n, true
+	case uint32:
+		return uint64(n), true
+	case int:
+		if n >= 0 {
+			return uint64(n), true
+		}
+	case float64:
+		if n >= 0 {
+			return uint64(n), true
+		}
+	}
+	return 0, false
+}
+
+func formatEphemeralDuration(seconds uint64) string {
+	switch seconds {
+	case 0:
+		return "off"
+	case 24 * 60 * 60:
+		return "24h"
+	case 7 * 24 * 60 * 60:
+		return "7d"
+	case 90 * 24 * 60 * 60:
+		return "90d"
+	default:
+		return fmt.Sprintf("%ds", seconds)
+	}
 }
 
 func renderUnknownTag(label string) string {

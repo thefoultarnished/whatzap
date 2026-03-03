@@ -55,6 +55,7 @@ func newTestApp(t *testing.T) *App {
 	return &App{
 		db:        db,
 		cachePath: cachePath,
+		apiToken:  "test-api-token",
 		wsClients: map[*websocket.Conn]struct{}{},
 		state: PersistedState{
 			Chats:    map[string]Chat{},
@@ -62,6 +63,11 @@ func newTestApp(t *testing.T) *App {
 			Messages: map[string][]WireMessage{},
 		},
 	}
+}
+
+func authorizedRequest(req *http.Request, app *App) *http.Request {
+	req.Header.Set(authHeaderName, "Bearer "+app.apiToken)
+	return req
 }
 
 // Receipt check.
@@ -203,10 +209,118 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsUnauthorizedRequests(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/contacts", nil)
+	rec := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestHandlerAllowsAuthorizedRequests(t *testing.T) {
+	app := newTestApp(t)
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/contacts", nil), app)
+	rec := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestHealthDoesNotRequireAuth(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestCORSAllowsOnlyLoopbackOrigins(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodOptions, "/contacts", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("allow origin = %q, want localhost origin", got)
+	}
+}
+
+func TestCORSRejectsNonLoopbackOrigins(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodOptions, "/contacts", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	rec := httptest.NewRecorder()
+
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestWebSocketRequiresAuthAndAllowedOrigin(t *testing.T) {
+	app := newTestApp(t)
+	srv := httptest.NewServer(app.handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	t.Run("missing auth is rejected", func(t *testing.T) {
+		header := http.Header{}
+		header.Set("Origin", "http://localhost:3000")
+		_, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if err == nil {
+			t.Fatalf("expected websocket dial to fail without auth")
+		}
+	})
+
+	t.Run("disallowed origin is rejected", func(t *testing.T) {
+		header := http.Header{}
+		header.Set(authHeaderName, "Bearer "+app.apiToken)
+		header.Set("Origin", "https://evil.example")
+		_, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if err == nil {
+			t.Fatalf("expected websocket dial to fail for disallowed origin")
+		}
+	})
+
+	t.Run("authorized loopback origin succeeds", func(t *testing.T) {
+		header := http.Header{}
+		header.Set(authHeaderName, "Bearer "+app.apiToken)
+		header.Set("Origin", "http://127.0.0.1:3000")
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		if err != nil {
+			t.Fatalf("expected websocket dial to succeed: %v", err)
+		}
+		_ = conn.Close()
+	})
+}
+
 // Logout failure.
 func TestHandleLogoutFailsWhenStateCannotBePersisted(t *testing.T) {
 	app := newTestApp(t)
-	app.cachePath = t.TempDir()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker file failed: %v", err)
+	}
+	app.cachePath = filepath.Join(blocker, "state.json")
 	app.started = true
 	app.connected = true
 	app.state = PersistedState{
@@ -265,6 +379,35 @@ func TestPersistStateWithErr(t *testing.T) {
 	}
 }
 
+// Atomic write check.
+func TestWriteFileAtomicReplacesFileAndCleansTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed file failed: %v", err)
+	}
+
+	if err := writeFileAtomic(path, []byte("new"), 0o644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read target file failed: %v", err)
+	}
+	if string(raw) != "new" {
+		t.Fatalf("file contents = %q, want new", string(raw))
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "state.json.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files failed: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no temp files, found %d", len(matches))
+	}
+}
+
 // Load check.
 func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 	app := newTestApp(t)
@@ -294,6 +437,65 @@ func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 	}
 	if msgs[0].Key.RemoteJID != "15551230001@s.whatsapp.net" {
 		t.Fatalf("remote jid = %q, want canonical jid", msgs[0].Key.RemoteJID)
+	}
+}
+
+// Cache path check.
+func TestResolveBackendCacheDirUsesOverride(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "appdata")
+	t.Setenv("WHATZAP_DATA_DIR", override)
+
+	cacheDir, err := resolveBackendCacheDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve backend cache dir: %v", err)
+	}
+
+	want := filepath.Join(override, "backend")
+	if cacheDir != want {
+		t.Fatalf("cache dir = %q, want %q", cacheDir, want)
+	}
+	if _, err := os.Stat(cacheDir); err != nil {
+		t.Fatalf("cache dir was not created: %v", err)
+	}
+}
+
+// Legacy migration check.
+func TestResolveBackendCacheDirMigratesLegacyCache(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "appdata")
+	t.Setenv("WHATZAP_DATA_DIR", override)
+
+	workDir := t.TempDir()
+	legacyDir := filepath.Join(workDir, ".whatsmeow_cache")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy dir: %v", err)
+	}
+	statePath := filepath.Join(legacyDir, "state.json")
+	dbPath := filepath.Join(legacyDir, "store.db")
+	if err := os.WriteFile(statePath, []byte(`{"chats":{"c1":{"id":"c1"}}}`), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	if err := os.WriteFile(dbPath, []byte("sqlite-bytes"), 0o644); err != nil {
+		t.Fatalf("write legacy db: %v", err)
+	}
+
+	cacheDir, err := resolveBackendCacheDir(workDir)
+	if err != nil {
+		t.Fatalf("resolve backend cache dir: %v", err)
+	}
+
+	migratedState, err := os.ReadFile(filepath.Join(cacheDir, "state.json"))
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if string(migratedState) != `{"chats":{"c1":{"id":"c1"}}}` {
+		t.Fatalf("unexpected migrated state: %s", string(migratedState))
+	}
+	migratedDB, err := os.ReadFile(filepath.Join(cacheDir, "store.db"))
+	if err != nil {
+		t.Fatalf("read migrated db: %v", err)
+	}
+	if string(migratedDB) != "sqlite-bytes" {
+		t.Fatalf("unexpected migrated db: %s", string(migratedDB))
 	}
 }
 

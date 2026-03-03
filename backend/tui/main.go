@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +14,11 @@ import (
 
 func main() {
 	loadConfig()
+	apiToken, err := resolveClientAPIToken()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	switch currentConfig.ThemeName {
 	case "aurora":
@@ -31,35 +38,38 @@ func main() {
 	demoMode := demoEnabled()
 	for {
 		model := m{
-			baseURL:        "http://127.0.0.1:8787",
-			wsURL:          "ws://127.0.0.1:8787/ws",
-			backendDir:     backendDir,
-			client:         &http.Client{Timeout: 12 * time.Second},
-			demoMode:       demoMode,
-			status:         "Starting backend...",
-			mode:           "nav",
-			sidebarTab:     "chats",
-			contacts:       map[string]contact{},
-			msgs:           map[string][]wireMsg{},
-			whitelist:      map[string]string{},
-			names:          map[string]string{},
-			sel:            0,
-			scroll:         0,
-			sideScroll:     0,
-			active:         "",
-			search:         "",
-			input:          "",
-			err:            "",
-			topBarMsg:      "",
-			topBarShown:    0,
-			topBarVer:      0,
-			cursorOn:       true,
-			pulseOn:        false,
-			flashUntil:     map[string]time.Time{},
-			sidebarFocused: false,
-			startedBackend: false,
-			mouseEnabled:   currentConfig.MouseEnabled,
-			mainCache:      &renderCache{},
+			baseURL:          "http://127.0.0.1:8787",
+			wsURL:            "ws://127.0.0.1:8787/ws",
+			backendDir:       backendDir,
+			apiToken:         apiToken,
+			client:           &http.Client{Timeout: 12 * time.Second},
+			demoMode:         demoMode,
+			status:           "Starting backend...",
+			mode:             "nav",
+			sidebarTab:       "chats",
+			contacts:         map[string]contact{},
+			contactsByNumber: map[string]contact{},
+			msgs:             map[string][]wireMsg{},
+			whitelist:        map[string]string{},
+			names:            map[string]string{},
+			sel:              0,
+			scroll:           0,
+			sideScroll:       0,
+			active:           "",
+			search:           "",
+			input:            "",
+			err:              "",
+			topBarMsg:        "",
+			topBarShown:      0,
+			topBarVer:        0,
+			cursorOn:         true,
+			pulseOn:          false,
+			flashUntil:       map[string]time.Time{},
+			sidebarFocused:   false,
+			startedBackend:   false,
+			mouseEnabled:     currentConfig.MouseEnabled,
+			sidebarCache:     &sidebarCache{},
+			mainCache:        &renderCache{},
 		}
 		if demoMode {
 			model.status = "Starting demo..."
@@ -84,6 +94,20 @@ func main() {
 		}
 		break
 	}
+}
+
+func resolveClientAPIToken() (string, error) {
+	if token := os.Getenv(apiTokenEnvVar); token != "" {
+		_ = os.Setenv(apiTokenEnvVar, token)
+		return token, nil
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate api token: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(buf)
+	_ = os.Setenv(apiTokenEnvVar, token)
+	return token, nil
 }
 
 func detectDirs() string {

@@ -44,9 +44,14 @@ func TestBackendProcessStartsAndServesHealth(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
+	apiToken := "process-test-token"
 
 	runCmd := exec.CommandContext(ctx, exePath)
 	runCmd.Dir = tmpDir
+	runCmd.Env = append(os.Environ(),
+		"WHATZAP_DATA_DIR="+filepath.Join(tmpDir, "appdata"),
+		apiTokenEnvVar+"="+apiToken,
+	)
 	logPath := filepath.Join(tmpDir, "backend.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -71,14 +76,17 @@ func TestBackendProcessStartsAndServesHealth(t *testing.T) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	healthURL := "http://127.0.0.1:8787/health"
 	var lastErr error
+	ready := false
+	timedOut := false
 	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) && !timedOut {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 		res, err := client.Do(req)
 		if err == nil {
 			_ = res.Body.Close()
 			if res.StatusCode == http.StatusOK {
-				return
+				ready = true
+				break
 			}
 			lastErr = fmt.Errorf("health status %s", res.Status)
 		} else {
@@ -87,13 +95,35 @@ func TestBackendProcessStartsAndServesHealth(t *testing.T) {
 
 		select {
 		case <-ctx.Done():
-			goto fail
+			timedOut = true
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
 
-fail:
-	_, _ = logFile.Seek(0, 0)
-	rawLog, _ := io.ReadAll(logFile)
-	t.Fatalf("backend health did not become ready: %v: %s", lastErr, strings.TrimSpace(string(rawLog)))
+	if !ready {
+		_, _ = logFile.Seek(0, 0)
+		rawLog, _ := io.ReadAll(logFile)
+		t.Fatalf("backend health did not become ready: %v: %s", lastErr, strings.TrimSpace(string(rawLog)))
+	}
+
+	unauthReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:8787/contacts", nil)
+	unauthRes, err := client.Do(unauthReq)
+	if err != nil {
+		t.Fatalf("unauthorized request failed: %v", err)
+	}
+	_ = unauthRes.Body.Close()
+	if unauthRes.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized contacts status = %d, want %d", unauthRes.StatusCode, http.StatusUnauthorized)
+	}
+
+	authReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:8787/contacts", nil)
+	authReq.Header.Set(authHeaderName, "Bearer "+apiToken)
+	authRes, err := client.Do(authReq)
+	if err != nil {
+		t.Fatalf("authorized request failed: %v", err)
+	}
+	_ = authRes.Body.Close()
+	if authRes.StatusCode != http.StatusOK {
+		t.Fatalf("authorized contacts status = %d, want %d", authRes.StatusCode, http.StatusOK)
+	}
 }

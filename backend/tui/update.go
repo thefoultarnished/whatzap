@@ -29,7 +29,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		x.startedBackend, x.backend = v.started, v.cmd
 		x.status = "Connecting..."
-		return x, tea.Batch(openWS(x.wsURL), postEmpty(x.client, x.baseURL+"/start", nil))
+		return x, tea.Batch(openWS(x.wsURL, x.apiToken), postEmpty(x.client, x.baseURL+"/start", nil))
 	case wsOpenMsg:
 		if v.err != nil {
 			x.err = ""
@@ -42,7 +42,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.ws, x.wsCh = v.conn, v.ch
 		return x, readWS(x.wsCh)
 	case reconnectMsg:
-		return x, openWS(x.wsURL)
+		return x, openWS(x.wsURL, x.apiToken)
 	case wsEvtMsg:
 		if !v.ok {
 			return x, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} })
@@ -164,6 +164,8 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, c := range v.contacts {
 			x.contacts[c.ID] = c
 		}
+		x.rebuildContactIndex()
+		x.markIdentityChanged()
 	case msgsMsg:
 		if v.err != nil {
 			x.err = ""
@@ -187,6 +189,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		x.whitelist = v.whitelist
 		x.names = v.names
+		x.markIdentityChanged()
 	case whitelistSetMsg:
 		if v.err != nil {
 			x.err = ""
@@ -201,6 +204,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.chats = nil
 		x.msgs = map[string][]wireMsg{}
 		x.contacts = map[string]contact{}
+		x.contactsByNumber = map[string]contact{}
 		x.whitelist = map[string]string{}
 		x.names = map[string]string{}
 		x.replyTo = nil
@@ -295,6 +299,76 @@ func (x m) callBanner(cm callMsg) string {
 	}
 }
 
+func preferredContact(a, b contact) contact {
+	score := func(c contact) int {
+		switch {
+		case strings.TrimSpace(c.Notify) != "":
+			return 2
+		case strings.TrimSpace(c.Name) != "":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if score(a) >= score(b) {
+		return a
+	}
+	return b
+}
+
+func (x *m) rebuildContactIndex() {
+	x.contactsByNumber = make(map[string]contact, len(x.contacts))
+	for _, ct := range x.contacts {
+		n := num(ct.ID)
+		if n == "" {
+			continue
+		}
+		if prev, ok := x.contactsByNumber[n]; ok {
+			x.contactsByNumber[n] = preferredContact(ct, prev)
+			continue
+		}
+		x.contactsByNumber[n] = ct
+	}
+}
+
+func (x *m) invalidateSidebarContacts() {
+	if x.sidebarCache == nil {
+		x.sidebarCache = &sidebarCache{}
+	}
+	x.sidebarCache.contacts = nil
+	x.sidebarCache.contactsValid = false
+}
+
+func (x *m) markIdentityChanged() {
+	x.identityVersion++
+	if x.mainCache != nil {
+		x.mainCache.result = ""
+	}
+	x.invalidateSidebarContacts()
+}
+
+func (x m) activeChatWhitelisted() bool {
+	if x.active == "" {
+		return false
+	}
+	_, ok := x.whitelist[num(x.active)]
+	return ok
+}
+
+func (x m) chatInputLocked() bool {
+	return x.active != "" && !x.activeChatWhitelisted()
+}
+
+func (x *m) clearChatComposer() {
+	x.input = ""
+	x.inputBuf = ""
+	x.inputFlushScheduled = false
+	x.inputAllSelected = false
+	x.replyTo = nil
+	x.selectedMsgID = ""
+	x.closeEmojiPicker()
+}
+
 func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "ctrl+c":
@@ -374,7 +448,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return x, nil
 	case "alt+e":
-		if x.status == "ready" && x.mode == "chat" && x.active != "" {
+		if x.status == "ready" && x.mode == "chat" && x.active != "" && !x.chatInputLocked() {
 			x.openEmojiPicker()
 		}
 		return x, nil
@@ -468,6 +542,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "chat":
+		inputLocked := x.chatInputLocked()
 		if k.Alt && (k.Type == tea.KeyUp || k.Type == tea.KeyDown) {
 			f := x.filtered()
 			if len(f) == 0 {
@@ -499,7 +574,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch k.Type {
 		case tea.KeyTab:
-			if !x.sidebarFocused {
+			if !x.sidebarFocused && !inputLocked {
 				x.input += x.inputBuf
 				x.inputBuf = ""
 				x.inputFlushScheduled = false
@@ -552,6 +627,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				x.scroll--
 			}
 		case tea.KeyCtrlA:
+			if inputLocked {
+				return x, nil
+			}
 			x.input += x.inputBuf
 			x.inputBuf = ""
 			x.inputFlushScheduled = false
@@ -559,7 +637,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				x.inputAllSelected = true
 			}
 		case tea.KeyBackspace:
-			if x.sidebarFocused {
+			if x.sidebarFocused || inputLocked {
 				return x, nil
 			}
 			x.input += x.inputBuf
@@ -577,6 +655,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if x.sidebarFocused {
 				x.sidebarFocused = false
 				return x.openSelectedChat()
+			}
+			if inputLocked {
+				return x, nil
 			}
 			x.input += x.inputBuf
 			x.inputBuf = ""
@@ -604,6 +685,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return x, send(x.client, x.baseURL, x.active, txt, replyTo)
 		default:
 			if x.sidebarFocused {
+				return x, nil
+			}
+			if inputLocked {
 				return x, nil
 			}
 			if k.String() == "r" && x.input == "" && x.active != "" {
@@ -784,6 +868,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 			x.whitelist[n] = name
 			cmds = append(cmds, setWhitelistEntry(x.client, x.baseURL, n, name, 1))
 		}
+		x.markIdentityChanged()
 		msg := fmt.Sprintf("Whitelisted %d chats (%d new)", len(x.whitelist), added)
 		if x.demoMode {
 			return x.setTopBar(msg), true
@@ -800,6 +885,10 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 			cmds = append(cmds, setWhitelistEntry(x.client, x.baseURL, n, "", 0))
 		}
 		x.whitelist = map[string]string{}
+		x.markIdentityChanged()
+		if x.active != "" {
+			x.clearChatComposer()
+		}
 		msg := fmt.Sprintf("Removed %d from whitelist", count)
 		if x.demoMode {
 			return x.setTopBar(msg), true
@@ -814,6 +903,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		_, already := x.whitelist[n]
 		name := x.nameFor(x.active)
 		x.whitelist[n] = name
+		x.markIdentityChanged()
 		msg := "Added to whitelist"
 		if already {
 			msg = "Already in whitelist"
@@ -829,6 +919,10 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		n := num(x.active)
 		_, was := x.whitelist[n]
 		delete(x.whitelist, n)
+		x.markIdentityChanged()
+		if x.active != "" && num(x.active) == n {
+			x.clearChatComposer()
+		}
 		msg := "Removed from whitelist"
 		if !was {
 			msg = "Not in whitelist"
@@ -850,6 +944,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		if _, ok := x.whitelist[n]; ok {
 			x.whitelist[n] = name
 		}
+		x.markIdentityChanged()
 		if x.demoMode {
 			return x.setTopBar("Renamed"), true
 		}
@@ -1020,6 +1115,9 @@ func rehashStyles() {
 
 func (x m) sidebarItems() []chat {
 	if x.sidebarTab == "contacts" {
+		if x.sidebarCache != nil && x.sidebarCache.contactsValid {
+			return x.sidebarCache.contacts
+		}
 		out := make([]chat, 0, len(x.contacts))
 		for _, ct := range x.contacts {
 			if ct.ID == "" || strings.HasSuffix(ct.ID, "@g.us") || ct.ID == "status@broadcast" {
@@ -1035,6 +1133,11 @@ func (x m) sidebarItems() []chat {
 			}
 			return li < lj
 		})
+		if x.sidebarCache != nil {
+			x.sidebarCache.contacts = out
+			x.sidebarCache.contactsValid = true
+			return x.sidebarCache.contacts
+		}
 		return out
 	}
 	out := make([]chat, 0, len(x.chats))
@@ -1111,6 +1214,9 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 		x.sel = 0
 	}
 	x.active, x.mode, x.scroll = f[x.sel].ID, "chat", 0
+	if x.chatInputLocked() {
+		x.clearChatComposer()
+	}
 
 	// Clear the unread dot right away.
 	for i := range x.chats {

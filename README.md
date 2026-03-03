@@ -68,7 +68,9 @@ The project has two cooperating processes/components:
    - Handles QR login/session startup
    - Maintains local state for chats, contacts, messages, whitelist entries, and custom names
    - Persists local state and session/cache data
-   - Exposes a local HTTP + WebSocket API
+   - Exposes a local HTTP + WebSocket API bound to `127.0.0.1:8787`
+   - Requires a local bearer token for every endpoint except `/health`
+   - Restricts browser origins to loopback hosts (`localhost` / `127.0.0.1`)
    - Translates WhatsApp events into lightweight wire events for the TUI
 
 2. **TUI frontend**
@@ -102,6 +104,12 @@ The backend currently exposes local endpoints for:
 - `/profile-picture`
 - `/media/download`
 - `/logout`
+
+Security notes:
+
+- `/health` stays open so the TUI can detect whether a backend is already running.
+- All other HTTP routes and the `/ws` websocket require `Authorization: Bearer <token>`.
+- Browser CORS is limited to loopback origins instead of `*`.
 
 The WebSocket stream carries live events such as:
 

@@ -21,10 +21,16 @@ type mainCacheKey struct {
 	replyToID    string
 	selectedMsg  string
 	contactCount int
+	identityVer  int
 }
 type renderCache struct {
 	key    mainCacheKey
 	result string
+}
+
+type sidebarCache struct {
+	contacts      []chat
+	contactsValid bool
 }
 
 type Theme struct {
@@ -80,7 +86,7 @@ type env struct {
 }
 
 type m struct {
-	baseURL, wsURL, backendDir               string
+	baseURL, wsURL, backendDir, apiToken     string
 	client                                   *http.Client
 	demoMode                                 bool
 	w, h                                     int
@@ -98,6 +104,7 @@ type m struct {
 	sidebarTab                               string
 	chats                                    []chat
 	contacts                                 map[string]contact
+	contactsByNumber                         map[string]contact
 	msgs                                     map[string][]wireMsg
 	active, mode, search, searchInput, input string
 	sel, scroll, sideScroll                  int
@@ -124,6 +131,8 @@ type m struct {
 	emojiResultsDirty                        bool
 	restartRequested                         bool
 	lastTypeTime                             time.Time
+	identityVersion                          int
+	sidebarCache                             *sidebarCache
 	mainCache                                *renderCache
 	inputBuf                                 string
 	inputFlushScheduled                      bool
@@ -205,5 +214,5 @@ func (x m) Init() tea.Cmd {
 	if x.demoMode {
 		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick())
 	}
-	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir), nextCursorBlink(), nextSpinnerTick())
+	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir, x.apiToken), nextCursorBlink(), nextSpinnerTick())
 }
