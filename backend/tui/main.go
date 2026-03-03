@@ -28,12 +28,14 @@ func main() {
 	rehashStyles()
 
 	backendDir := detectDirs()
+	demoMode := demoEnabled()
 	for {
 		model := m{
 			baseURL:        "http://127.0.0.1:8787",
 			wsURL:          "ws://127.0.0.1:8787/ws",
 			backendDir:     backendDir,
 			client:         &http.Client{Timeout: 12 * time.Second},
+			demoMode:       demoMode,
 			status:         "Starting backend...",
 			mode:           "nav",
 			sidebarTab:     "chats",
@@ -58,6 +60,9 @@ func main() {
 			startedBackend: false,
 			mouseEnabled:   currentConfig.MouseEnabled,
 			mainCache:      &renderCache{},
+		}
+		if demoMode {
+			model.status = "Starting demo..."
 		}
 
 		opts := []tea.ProgramOption{tea.WithAltScreen()}

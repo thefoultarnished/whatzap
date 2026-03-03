@@ -138,6 +138,9 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 	} else {
 		wifi := lipgloss.NewStyle().Foreground(brand).Render("ᯤ")
 		connText := lipgloss.NewStyle().Foreground(brand).Render(" connected")
+		if x.demoMode {
+			connText = lipgloss.NewStyle().Foreground(brand).Render(" demo")
+		}
 		statusPart = mutedStyle.Render("[") + wifi + connText + mutedStyle.Render("]") + " "
 	}
 

@@ -22,6 +22,10 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			x.err = v.err.Error()
 			return x, nil
 		}
+		if v.demo {
+			x.loadDemoState()
+			return x, x.setTopBar("Demo mode: fake chats loaded")
+		}
 		x.startedBackend, x.backend = v.started, v.cmd
 		x.status = "Connecting..."
 		return x, tea.Batch(openWS(x.wsURL), postEmpty(x.client, x.baseURL+"/start", nil))
@@ -573,6 +577,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			replyTo := x.replyTo
 			x.replyTo = nil
+			if x.demoMode {
+				return x, demoSend(x.active, txt, replyTo)
+			}
 			return x, send(x.client, x.baseURL, x.active, txt, replyTo)
 		default:
 			if x.sidebarFocused {
@@ -728,8 +735,14 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 	case txt == "/logout":
 		return postEmpty(x.client, x.baseURL+"/logout", func([]byte) tea.Msg { return logoutMsg{} }), true
 	case includeGlobal && txt == "/synccontacts":
+		if x.demoMode {
+			return x.setTopBar("Demo mode: contacts already fake"), true
+		}
 		return tea.Batch(x.setTopBar("Syncing contacts..."), syncContacts(x.client, x.baseURL)), true
 	case includeGlobal && txt == "/syncgroups":
+		if x.demoMode {
+			return x.setTopBar("Demo mode: groups already fake"), true
+		}
 		return tea.Batch(x.setTopBar("Syncing groups..."), syncGroups(x.client, x.baseURL)), true
 	case txt == "/whitelistall":
 		if len(x.chats) == 0 {
@@ -750,7 +763,11 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 			x.whitelist[n] = name
 			cmds = append(cmds, setWhitelistEntry(x.client, x.baseURL, n, name, 1))
 		}
-		cmds = append(cmds, x.setTopBar(fmt.Sprintf("Whitelisted %d chats (%d new)", len(x.whitelist), added)))
+		msg := fmt.Sprintf("Whitelisted %d chats (%d new)", len(x.whitelist), added)
+		if x.demoMode {
+			return x.setTopBar(msg), true
+		}
+		cmds = append(cmds, x.setTopBar(msg))
 		return tea.Batch(cmds...), true
 	case txt == "/blacklistall":
 		count := len(x.whitelist)
@@ -762,7 +779,11 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 			cmds = append(cmds, setWhitelistEntry(x.client, x.baseURL, n, "", 0))
 		}
 		x.whitelist = map[string]string{}
-		cmds = append(cmds, x.setTopBar(fmt.Sprintf("Removed %d from whitelist", count)))
+		msg := fmt.Sprintf("Removed %d from whitelist", count)
+		if x.demoMode {
+			return x.setTopBar(msg), true
+		}
+		cmds = append(cmds, x.setTopBar(msg))
 		return tea.Batch(cmds...), true
 	case txt == "/whitelist":
 		if includeGlobal && x.active == "" {
@@ -776,6 +797,9 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		if already {
 			msg = "Already in whitelist"
 		}
+		if x.demoMode {
+			return x.setTopBar(msg), true
+		}
 		return tea.Batch(setWhitelistEntry(x.client, x.baseURL, n, name, 1), x.setTopBar(msg)), true
 	case txt == "/blacklist":
 		if includeGlobal && x.active == "" {
@@ -787,6 +811,9 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		msg := "Removed from whitelist"
 		if !was {
 			msg = "Not in whitelist"
+		}
+		if x.demoMode {
+			return x.setTopBar(msg), true
 		}
 		return tea.Batch(setWhitelistEntry(x.client, x.baseURL, n, "", 0), x.setTopBar(msg)), true
 	case strings.HasPrefix(txt, "/rename "):
@@ -801,6 +828,9 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		x.names[n] = name
 		if _, ok := x.whitelist[n]; ok {
 			x.whitelist[n] = name
+		}
+		if x.demoMode {
+			return x.setTopBar("Renamed"), true
 		}
 		return tea.Batch(setName(x.client, x.baseURL, n, name), x.setTopBar("Renamed")), true
 	case txt == "/rename":
@@ -818,6 +848,9 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		}
 		if _, ok := x.whitelist[num(x.active)]; !ok {
 			return x.setTopBar("Not whitelisted - use /whitelist to enable"), true
+		}
+		if x.demoMode {
+			return x.setTopBar("Demo mode: media send disabled"), true
 		}
 		kind := cmd.kind
 		if kind == "" {
@@ -1064,6 +1097,10 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 			x.chats[i].UnreadCount = 0
 			break
 		}
+	}
+
+	if x.demoMode {
+		return x, nil
 	}
 
 	return x, tea.Batch(

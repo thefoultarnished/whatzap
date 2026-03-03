@@ -43,6 +43,7 @@ func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
 		return initMsg{err: fmt.Errorf("backend did not become ready")}
 	}
 }
+
 func health(c *http.Client, base string) error {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/health", nil)
 	res, err := c.Do(req)
@@ -223,6 +224,9 @@ func sendFile(c *http.Client, base, chatID, kind, path, caption string) tea.Cmd 
 	}
 }
 func (x m) cleanup() {
+	if x.demoMode {
+		return
+	}
 	if x.ws != nil {
 		_ = x.ws.Close()
 	}

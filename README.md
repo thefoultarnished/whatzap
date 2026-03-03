@@ -9,7 +9,7 @@
 
 A terminal-first WhatsApp client built in Go. It runs a local `whatsmeow` backend and a Bubble Tea / Lip Gloss TUI on top of it, so you get a native terminal workflow instead of a hidden browser tab.
 
-![WhatzApp CLI](assets/screenshot.png)
+![WhatZAP main UI](assets/TokyoNight.png)
 
 ## Current Features
 
@@ -28,7 +28,33 @@ A terminal-first WhatsApp client built in Go. It runs a local `whatsmeow` backen
 
 ## Screenshots
 
-![WhatzApp CLI](assets/screenshot.png)
+The TUI ships with multiple built-in themes, a keyboard-first chat workflow, and an in-app emoji picker.
+
+### Theme Gallery
+
+#### Tokyo Night
+
+![WhatZAP Tokyo Night theme](assets/TokyoNight.png)
+
+#### Aurora
+
+![WhatZAP Aurora theme](assets/Aurora.png)
+
+#### Catppuccin
+
+![WhatZAP Catppuccin theme](assets/Catpuccin.png)
+
+#### Monokai
+
+![WhatZAP Monokai theme](assets/Monokai.png)
+
+#### Charcoal
+
+![WhatZAP Charcoal theme](assets/Charcoal.png)
+
+### Emoji Picker
+
+![WhatZAP emoji picker](assets/Emojis.png)
 
 ## Architecture
 

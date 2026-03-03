@@ -82,6 +82,7 @@ type env struct {
 type m struct {
 	baseURL, wsURL, backendDir               string
 	client                                   *http.Client
+	demoMode                                 bool
 	w, h                                     int
 	status, err                              string
 	qrRaw                                    string
@@ -130,6 +131,7 @@ type m struct {
 
 type initMsg struct {
 	started bool
+	demo    bool
 	cmd     *exec.Cmd
 	err     error
 }
@@ -197,5 +199,8 @@ type syncGroupsDoneMsg struct {
 }
 
 func (x m) Init() tea.Cmd {
+	if x.demoMode {
+		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick())
+	}
 	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir), nextCursorBlink(), nextSpinnerTick())
 }
