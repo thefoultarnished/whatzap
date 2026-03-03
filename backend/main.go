@@ -103,6 +103,7 @@ type App struct {
 	started   bool
 	connected bool
 
+	cacheDir  string
 	cachePath string
 	state     PersistedState
 
@@ -257,33 +258,8 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 	cachePath := filepath.Join(cacheDir, "state.json")
-
-	dbPath := filepath.Join(cacheDir, "store.db")
-	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", waLog.Stdout("db", "WARN", true))
-	if err != nil {
-		return nil, err
-	}
-	device, err := container.GetFirstDevice(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	rawDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := rawDB.Exec(`CREATE TABLE IF NOT EXISTS chat_permissions (
-		phone   TEXT PRIMARY KEY,
-		name    TEXT NOT NULL DEFAULT '',
-		allowed INTEGER NOT NULL DEFAULT 0
-	)`); err != nil {
-		return nil, err
-	}
-
-	client := whatsmeow.NewClient(device, waLog.Stdout("client", "WARN", true))
 	app := &App{
-		client:    client,
-		db:        rawDB,
+		cacheDir:  cacheDir,
 		cachePath: cachePath,
 		apiToken:  apiToken,
 		wsClients: map[*websocket.Conn]struct{}{},
@@ -293,9 +269,81 @@ func NewApp() (*App, error) {
 			Messages: map[string][]WireMessage{},
 		},
 	}
+	if err := app.initPersistentResources(); err != nil {
+		return nil, err
+	}
 	app.loadState()
-	app.bindEvents()
 	return app, nil
+}
+
+func (a *App) initPersistentResources() error {
+	cacheDir := strings.TrimSpace(a.cacheDir)
+	if cacheDir == "" {
+		if a.cachePath != "" {
+			cacheDir = filepath.Dir(a.cachePath)
+		} else {
+			return fmt.Errorf("cache directory is not configured")
+		}
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	a.cacheDir = cacheDir
+	a.cachePath = filepath.Join(cacheDir, "state.json")
+
+	dbPath := filepath.Join(cacheDir, "store.db")
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", waLog.Stdout("db", "WARN", true))
+	if err != nil {
+		return err
+	}
+	device, err := container.GetFirstDevice(context.Background())
+	if err != nil {
+		return err
+	}
+
+	rawDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		return err
+	}
+	if _, err := rawDB.Exec(`CREATE TABLE IF NOT EXISTS chat_permissions (
+		phone   TEXT PRIMARY KEY,
+		name    TEXT NOT NULL DEFAULT '',
+		allowed INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
+
+	a.db = rawDB
+	a.client = whatsmeow.NewClient(device, waLog.Stdout("client", "WARN", true))
+	a.bindEvents()
+	return nil
+}
+
+func (a *App) resetPersistentStorage() error {
+	if a.db != nil {
+		if err := a.db.Close(); err != nil {
+			return err
+		}
+		a.db = nil
+	}
+
+	if strings.TrimSpace(a.cacheDir) != "" {
+		if err := os.RemoveAll(a.cacheDir); err != nil {
+			return err
+		}
+		if a.client == nil {
+			return nil
+		}
+		return a.initPersistentResources()
+	}
+
+	if strings.TrimSpace(a.cachePath) != "" {
+		if err := os.Remove(a.cachePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) handler() http.Handler {
@@ -1528,38 +1576,46 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var errs []string
+	var warnings []string
 	if a.client != nil {
-		a.client.Disconnect()
-		if err := a.client.Logout(context.Background()); err != nil {
-			errs = append(errs, fmt.Sprintf("logout failed: %v", err))
+		if a.client.Store != nil && a.client.Store.ID != nil {
+			if err := a.client.Logout(context.Background()); err != nil {
+				warnings = append(warnings, fmt.Sprintf("remote logout failed: %v", err))
+			}
 		}
+		a.client.Disconnect()
 		if a.client.Store != nil {
 			if err := a.client.Store.Delete(context.Background()); err != nil {
-				errs = append(errs, fmt.Sprintf("store delete failed: %v", err))
+				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("store delete failed: %v", err))
+				return
 			} else {
 				a.client.Store.ID = nil
 			}
 		}
 	}
-	if len(errs) > 0 {
-		writeErr(w, http.StatusInternalServerError, strings.Join(errs, "; "))
-		return
-	}
 	a.mu.Lock()
 	a.started = false
 	a.connected = false
+	a.needsBootstrapSync = false
 	a.state = PersistedState{
 		Chats:    map[string]Chat{},
 		Contacts: map[string]Contact{},
 		Messages: map[string][]WireMessage{},
 	}
 	a.mu.Unlock()
+	if err := a.resetPersistentStorage(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("local cleanup failed: %v", err))
+		return
+	}
 	if err := a.persistStateWithErr(); err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Logged out successfully"})
+	msg := "Logged out successfully"
+	if len(warnings) > 0 {
+		msg = "Local data cleared; QR login required"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
 }
 
 func (a *App) toWireMessage(evt *events.Message) WireMessage {

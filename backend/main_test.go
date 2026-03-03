@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,10 +24,6 @@ func newTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = db.Close()
-	})
-
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS chat_permissions (
 		phone   TEXT PRIMARY KEY,
 		name    TEXT NOT NULL DEFAULT '',
@@ -52,7 +49,7 @@ func newTestApp(t *testing.T) *App {
 		}
 	})
 
-	return &App{
+	app := &App{
 		db:        db,
 		cachePath: cachePath,
 		apiToken:  "test-api-token",
@@ -63,6 +60,12 @@ func newTestApp(t *testing.T) *App {
 			Messages: map[string][]WireMessage{},
 		},
 	}
+	t.Cleanup(func() {
+		if app.db != nil {
+			_ = app.db.Close()
+		}
+	})
+	return app
 }
 
 func authorizedRequest(req *http.Request, app *App) *http.Request {
@@ -206,6 +209,45 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	}
 	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 || len(persisted.Messages) != 0 {
 		t.Fatalf("persisted state was not cleared")
+	}
+}
+
+func TestHandleLogoutRemovesLocalCacheArtifacts(t *testing.T) {
+	app := newTestApp(t)
+	app.cacheDir = t.TempDir()
+	app.cachePath = filepath.Join(app.cacheDir, "state.json")
+	if err := os.WriteFile(app.cachePath, []byte(`{"stale":true}`), 0o644); err != nil {
+		t.Fatalf("write state file: %v", err)
+	}
+	leftover := filepath.Join(app.cacheDir, "leftover.tmp")
+	if err := os.WriteFile(leftover, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write leftover file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	rec := httptest.NewRecorder()
+	app.handleLogout(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leftover file still exists or stat failed: %v", err)
+	}
+	raw, err := os.ReadFile(app.cachePath)
+	if err != nil {
+		t.Fatalf("failed to read recreated state file: %v", err)
+	}
+	var persisted PersistedState
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("failed to parse recreated state file: %v", err)
+	}
+	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 || len(persisted.Messages) != 0 {
+		t.Fatalf("recreated persisted state was not empty")
+	}
+	if app.db != nil {
+		_ = app.db.Close()
+		app.db = nil
 	}
 }
 
