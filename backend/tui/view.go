@@ -36,6 +36,9 @@ func (x m) View() string {
 				statusBody = "Generating QR..."
 				hint = mutedStyle.Render("Preparing login QR")
 			}
+		} else if strings.HasPrefix(strings.ToLower(x.status), "logged out") {
+			statusBody = accentStyle.Copy().Bold(false).Render(x.status)
+			hint = mutedStyle.Render("Restart and scan a QR code to sign in again")
 		} else {
 			statusBody = accentStyle.Copy().Bold(false).Render("[" + spinnerFrames[x.spinnerFrame] + "] " + statusBody)
 		}
@@ -43,9 +46,6 @@ func (x m) View() string {
 			Width(frameW).
 			Height(statusInnerH)
 		msg := title + "\n" + subtitle + "\n\n" + statusBody + "\n\n" + hint
-		if x.err != "" {
-			msg += "\n\n" + redStyle.Render(x.err)
-		}
 		return lipgloss.Place(x.w, x.h, lipgloss.Center, lipgloss.Center, box.Render(msg))
 	}
 	outerW := frameW
@@ -119,9 +119,6 @@ func (x m) View() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(muted).
 		Render(inner)
-	if x.err != "" {
-		frame = lipgloss.JoinVertical(lipgloss.Left, frame, redStyle.Copy().Bold(false).Render(" "+x.err))
-	}
 	return frame
 }
 

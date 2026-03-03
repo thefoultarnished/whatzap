@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -106,6 +107,8 @@ type App struct {
 
 	needsBootstrapSync bool
 }
+
+const maxUploadBytes = 100 * 1024 * 1024
 
 func main() {
 	app, err := NewApp()
@@ -1187,7 +1190,7 @@ func (a *App) handleSendFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ChatID = a.canonicalizeChatID(strings.TrimSpace(req.ChatID))
-	req.Path = strings.TrimSpace(req.Path)
+	req.Path = filepath.Clean(strings.TrimSpace(req.Path))
 	req.Caption = strings.TrimSpace(sanitizeOutgoingText(req.Caption))
 	req.Kind = strings.ToLower(strings.TrimSpace(req.Kind))
 	if req.ChatID == "" || req.Path == "" {
@@ -1208,6 +1211,18 @@ func (a *App) handleSendFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if info.IsDir() {
 		writeErr(w, http.StatusBadRequest, "path must be a file")
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeErr(w, http.StatusBadRequest, "path must be a regular file")
+		return
+	}
+	if info.Size() > maxUploadBytes {
+		writeErr(w, http.StatusBadRequest, "file too large: max 100 MB")
+		return
+	}
+	if err := validateSendFileInput(req.Path, req.Kind); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1334,13 +1349,23 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	var errs []string
 	if a.client != nil {
 		a.client.Disconnect()
-		_ = a.client.Logout(context.Background())
-		if a.client.Store != nil {
-			_ = a.client.Store.Delete(context.Background())
-			a.client.Store.ID = nil
+		if err := a.client.Logout(context.Background()); err != nil {
+			errs = append(errs, fmt.Sprintf("logout failed: %v", err))
 		}
+		if a.client.Store != nil {
+			if err := a.client.Store.Delete(context.Background()); err != nil {
+				errs = append(errs, fmt.Sprintf("store delete failed: %v", err))
+			} else {
+				a.client.Store.ID = nil
+			}
+		}
+	}
+	if len(errs) > 0 {
+		writeErr(w, http.StatusInternalServerError, strings.Join(errs, "; "))
+		return
 	}
 	a.mu.Lock()
 	a.started = false
@@ -1351,8 +1376,11 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Messages: map[string][]WireMessage{},
 	}
 	a.mu.Unlock()
-	a.persistState()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	if err := a.persistStateWithErr(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Logged out successfully"})
 }
 
 func toWireMessage(evt *events.Message) WireMessage {
@@ -1697,13 +1725,17 @@ func (a *App) safeFetchAppState(ctx context.Context, name appstate.WAPatchName) 
 }
 
 func (a *App) persistState() {
+	_ = a.persistStateWithErr()
+}
+
+func (a *App) persistStateWithErr() error {
 	a.mu.RLock()
 	b, err := json.Marshal(a.state)
 	a.mu.RUnlock()
 	if err != nil {
-		return
+		return err
 	}
-	_ = os.WriteFile(a.cachePath, b, 0o644)
+	return os.WriteFile(a.cachePath, b, 0o644)
 }
 
 func reconcileChatTimestamps(state *PersistedState) bool {
@@ -2068,6 +2100,55 @@ func mediaTypeForSendKind(kind string) (whatsmeow.MediaType, error) {
 	default:
 		return "", fmt.Errorf("unsupported media kind: %s", kind)
 	}
+}
+
+func validateSendFileInput(path, kind string) error {
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	if kind == "" {
+		return fmt.Errorf("kind is required")
+	}
+	if kind == "document" {
+		return nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open file")
+	}
+	defer f.Close()
+
+	header := make([]byte, 512)
+	n, err := f.Read(header)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("failed to inspect file")
+	}
+
+	sniffedType := http.DetectContentType(header[:n])
+	extType := ""
+	if ext := strings.ToLower(filepath.Ext(path)); ext != "" {
+		extType = mime.TypeByExtension(ext)
+	}
+
+	switch kind {
+	case "image":
+		if isExpectedMediaType(sniffedType, "image/") || isExpectedMediaType(extType, "image/") {
+			return nil
+		}
+		return fmt.Errorf("kind=image but file does not appear to be an image")
+	case "video":
+		if isExpectedMediaType(sniffedType, "video/") || isExpectedMediaType(extType, "video/") {
+			return nil
+		}
+		return fmt.Errorf("kind=video but file does not appear to be a video")
+	default:
+		return fmt.Errorf("unsupported media kind: %s", kind)
+	}
+}
+
+func isExpectedMediaType(actual, prefix string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(actual)), prefix)
 }
 
 func detectMIMEType(path string, data []byte, fallback string) string {

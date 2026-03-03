@@ -1,7 +1,5 @@
 # User-specific files
-whitelist.md
-icons.md
-suggest.md
+notes/
 .claude/
 
 # Build artifacts & binaries
@@ -12,9 +10,11 @@ suggest.md
 
 # Go cache
 backend/.whatsmeow_cache/
+.whatsmeow_cache/
 backend/.gocache/
 go.sum.bak
 *.mod.bak
+.whatzap_tui_config.json
 
 # Logs
 *.log
@@ -33,9 +33,3 @@ backend/out.json
 *.db-*
 *.sqlite
 *.sqlite3
-
-# Legacy Node.js / React-Ink code 
-node_modules/
-package-lock.json
-.baileys_auth/
-.baileys_cache/

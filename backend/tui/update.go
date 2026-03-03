@@ -19,7 +19,8 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.w, x.h = v.Width, v.Height
 	case initMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
+			x.err = ""
+			x.status = "Error: " + v.err.Error()
 			return x, nil
 		}
 		if v.demo {
@@ -31,7 +32,11 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, tea.Batch(openWS(x.wsURL), postEmpty(x.client, x.baseURL+"/start", nil))
 	case wsOpenMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
+			x.err = ""
+			if x.status == "ready" {
+				return x, tea.Batch(x.setTopBar("Connection failed: "+v.err.Error()), tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} }))
+			}
+			x.status = "Error: " + v.err.Error()
 			return x, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} })
 		}
 		x.ws, x.wsCh = v.conn, v.ch
@@ -102,7 +107,11 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, tea.Batch(cmds...)
 	case dataErr:
 		if v.err != nil {
-			x.err = v.err.Error()
+			x.err = ""
+			if x.status == "ready" {
+				return x, x.setTopBar(v.err.Error())
+			}
+			x.status = "Error: " + v.err.Error()
 		}
 	case topBarClearMsg:
 		if v.ver == x.topBarVer {
@@ -140,16 +149,16 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, nextSpinnerTick()
 	case chatsMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
-			return x, nil
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 		x.chats = v.chats
 		sort.Slice(x.chats, func(i, j int) bool { return x.chats[i].ConversationTimestamp > x.chats[j].ConversationTimestamp })
 		x.ensureSideVisible(x.sideViewRows())
 	case contactsMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
-			return x, nil
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 		x.contacts = map[string]contact{}
 		for _, c := range v.contacts {
@@ -157,14 +166,14 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case msgsMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
-			return x, nil
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 		x.msgs[v.chatID] = v.msgs
 	case sentMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
-			return x, nil
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 		x.msgs[v.chatID] = append(x.msgs[v.chatID], v.msg)
 		x.mainCache.result = ""
@@ -173,21 +182,33 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.msgActivityType = "sent"
 	case whitelistLoadMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
-			return x, nil
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 		x.whitelist = v.whitelist
 		x.names = v.names
 	case whitelistSetMsg:
 		if v.err != nil {
-			x.err = v.err.Error()
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
 		}
 	case logoutMsg:
 		if v.err != nil {
 			x.err = v.err.Error()
-			return x, nil
+			return x, x.setTopBar("Logout failed: " + v.err.Error())
 		}
-		x.active, x.chats, x.msgs = "", nil, map[string][]wireMsg{}
+		x.active = ""
+		x.chats = nil
+		x.msgs = map[string][]wireMsg{}
+		x.contacts = map[string]contact{}
+		x.whitelist = map[string]string{}
+		x.names = map[string]string{}
+		x.replyTo = nil
+		x.selectedMsgID = ""
+		x.status = v.msg
+		x.err = ""
+		x.mainCache.result = ""
+		return x, x.setTopBar(v.msg)
 	case tea.MouseMsg:
 		if v.Action == tea.MouseActionPress && v.Button == tea.MouseButtonLeft && x.mode == "chat" && x.active != "" {
 			sidePad := max(2, x.w/20)
@@ -421,7 +442,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			q := strings.TrimSpace(x.searchInput)
 			if q == "/logout" {
-				return x, postEmpty(x.client, x.baseURL+"/logout", func([]byte) tea.Msg { return logoutMsg{} })
+				return x, logout(x.client, x.baseURL)
 			}
 			x.sidebarFocused = false
 			x.search = q
@@ -733,7 +754,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		x.restartRequested = true
 		return tea.Quit, true
 	case txt == "/logout":
-		return postEmpty(x.client, x.baseURL+"/logout", func([]byte) tea.Msg { return logoutMsg{} }), true
+		return logout(x.client, x.baseURL), true
 	case includeGlobal && txt == "/synccontacts":
 		if x.demoMode {
 			return x.setTopBar("Demo mode: contacts already fake"), true

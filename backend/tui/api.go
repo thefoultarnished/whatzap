@@ -11,11 +11,44 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gorilla/websocket"
 )
+
+const backendStartupLogLimit = 8192
+
+type limitedBuffer struct {
+	mu    sync.Mutex
+	limit int
+	buf   []byte
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > b.limit {
+		b.buf = b.buf[len(b.buf)-b.limit:]
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+func formatBackendStartupError(prefix string, raw string) error {
+	msg := strings.TrimSpace(raw)
+	if msg == "" {
+		return fmt.Errorf("%s", prefix)
+	}
+	return fmt.Errorf("%s: %s", prefix, msg)
+}
 
 func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
 	return func() tea.Msg {
@@ -28,19 +61,32 @@ func ensureBackend(c *http.Client, base, dir string) tea.Cmd {
 		}
 		cmd := exec.Command(goBin, "run", ".")
 		cmd.Dir = dir
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
+		logBuf := &limitedBuffer{limit: backendStartupLogLimit}
+		cmd.Stdout = logBuf
+		cmd.Stderr = logBuf
 		if err := cmd.Start(); err != nil {
 			return initMsg{err: err}
 		}
+		waitCh := make(chan error, 1)
+		go func() {
+			waitCh <- cmd.Wait()
+		}()
 		deadline := time.Now().Add(35 * time.Second)
 		for time.Now().Before(deadline) {
 			if health(c, base) == nil {
 				return initMsg{started: true, cmd: cmd}
 			}
+			select {
+			case err := <-waitCh:
+				if err == nil {
+					return initMsg{err: formatBackendStartupError("backend exited before becoming ready", logBuf.String())}
+				}
+				return initMsg{err: formatBackendStartupError(fmt.Sprintf("backend failed to start (%v)", err), logBuf.String())}
+			default:
+			}
 			time.Sleep(400 * time.Millisecond)
 		}
-		return initMsg{err: fmt.Errorf("backend did not become ready")}
+		return initMsg{err: formatBackendStartupError("backend did not become ready", logBuf.String())}
 	}
 }
 
@@ -85,6 +131,7 @@ func readWS(ch <-chan env) tea.Cmd {
 func postEmpty(c *http.Client, url string, ok func([]byte) tea.Msg) tea.Cmd {
 	return postJSON(c, url, map[string]string{}, ok)
 }
+
 func postJSON(c *http.Client, url string, body any, ok func([]byte) tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		b, _ := json.Marshal(body)
@@ -105,6 +152,40 @@ func postJSON(c *http.Client, url string, body any, ok func([]byte) tea.Msg) tea
 		return dataErr{}
 	}
 }
+
+func logout(c *http.Client, base string) tea.Cmd {
+	return func() tea.Msg {
+		b, _ := json.Marshal(map[string]string{})
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/logout", bytes.NewReader(b))
+		req.Header.Set("content-type", "application/json")
+		res, err := c.Do(req)
+		if err != nil {
+			return logoutMsg{err: err}
+		}
+		defer res.Body.Close()
+		raw, _ := io.ReadAll(res.Body)
+		var out struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &out)
+		if res.StatusCode/100 != 2 {
+			msg := strings.TrimSpace(out.Error)
+			if msg == "" {
+				msg = strings.TrimSpace(string(raw))
+			}
+			if msg == "" {
+				msg = res.Status
+			}
+			return logoutMsg{err: fmt.Errorf("%s", msg)}
+		}
+		if strings.TrimSpace(out.Message) == "" {
+			out.Message = "Logged out successfully"
+		}
+		return logoutMsg{msg: out.Message}
+	}
+}
+
 func getChats(c *http.Client, base string) tea.Cmd {
 	return func() tea.Msg {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/chats", nil)

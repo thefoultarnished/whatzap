@@ -163,7 +163,10 @@ type sentMsg struct {
 	msg    wireMsg
 	err    error
 }
-type logoutMsg struct{ err error }
+type logoutMsg struct {
+	msg string
+	err error
+}
 type reconnectMsg struct{}
 type whitelistLoadMsg struct {
 	whitelist map[string]string // allowed=1 only
