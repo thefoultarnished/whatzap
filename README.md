@@ -3,9 +3,10 @@
 ## WhatsApp in your terminal. No browser, no bloat
 
 > [!CAUTION]
-> **Work in Progress:** This project is under active development. Expect bugs and breaking changes. It uses a local WhatsApp Web session and local caches/state; audit it before trusting it with anything sensitive.
+> **Work in Progress:** This project is under active development. Expect bugs and breaking changes. It keeps a local WhatsApp Web session plus local caches/state on disk; audit it before trusting it with sensitive conversations or account data.
 > **Not affiliated with Meta or WhatsApp:** This is an independent project and is not endorsed by, sponsored by, or associated with Meta or WhatsApp.
 > **Use at your own risk:** If your account is limited, flagged, blocked, or otherwise affected while using this project, that is your responsibility.
+> **Privacy warning:** This app persists local chat metadata, cached messages, contacts, whitelist/name settings, and WhatsApp session state. Do not use it on a shared machine unless you are comfortable with that data being present locally.
 
 A terminal-first WhatsApp client built in Go. It runs a local `whatsmeow` backend and a Bubble Tea / Lip Gloss TUI on top of it, so you get a native terminal workflow instead of a hidden browser tab.
 
@@ -68,9 +69,9 @@ The project has two cooperating processes/components:
    - Handles QR login/session startup
    - Maintains local state for chats, contacts, messages, whitelist entries, and custom names
    - Persists local state and session/cache data
-   - Exposes a local HTTP + WebSocket API bound to `127.0.0.1:8787`
+   - Exposes a local HTTP + WebSocket API for the TUI
    - Requires a local bearer token for every endpoint except `/health`
-   - Restricts browser origins to loopback hosts (`localhost` / `127.0.0.1`)
+   - Restricts browser origins to local hosts
    - Translates WhatsApp events into lightweight wire events for the TUI
 
 2. **TUI frontend**
@@ -109,7 +110,8 @@ Security notes:
 
 - `/health` stays open so the TUI can detect whether a backend is already running.
 - All other HTTP routes and the `/ws` websocket require `Authorization: Bearer <token>`.
-- Browser CORS is limited to loopback origins instead of `*`.
+- Browser CORS is limited to local origins instead of `*`.
+- The bearer token is local process auth, not a substitute for OS-level machine security.
 
 The WebSocket stream carries live events such as:
 
@@ -176,6 +178,13 @@ That local state currently covers:
 - custom local names
 
 This is one of the main reasons the app feels fast after the initial bootstrap.
+
+Privacy implications:
+
+- The local cache may contain message content, contact identifiers, and account/session state.
+- Treat the machine, user profile, backups, and screenshots as sensitive while this app is in use.
+- Do not commit cache files, local databases, exported logs, or `.env` files. The repository `.gitignore` is intended to exclude common local artifacts, but you should still verify `git status` before pushing.
+- If you need to remove local state, log out and delete the local cache/database files under the app data directory.
 
 ## Call Support
 
