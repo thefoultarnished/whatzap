@@ -405,7 +405,7 @@ func (a *App) bindEvents() {
 			if chatID == "" || chatID == "status@broadcast" {
 				return
 			}
-			msg := toWireMessage(v)
+			msg := a.toWireMessage(v)
 			msg.Key.RemoteJID = chatID
 			if msg.Key.Participant != "" {
 				msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
@@ -546,7 +546,7 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 			if wm == nil {
 				continue
 			}
-			msg := toWireMessageFromHistory(wm)
+			msg := a.toWireMessageFromHistory(wm)
 			if msg.Key.RemoteJID == "" {
 				msg.Key.RemoteJID = chatID
 			}
@@ -1562,11 +1562,11 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Logged out successfully"})
 }
 
-func toWireMessage(evt *events.Message) WireMessage {
+func (a *App) toWireMessage(evt *events.Message) WireMessage {
 	info := evt.Info
 	chatID := info.Chat.String()
 	effective := effectiveMessage(evt.Message)
-	msg, mediaProto := wireMessagePayload(evt.Message, effective)
+	msg, mediaProto := a.wireMessagePayload(evt.Message, effective)
 
 	key := WireKey{
 		ID:        info.ID,
@@ -1586,12 +1586,12 @@ func toWireMessage(evt *events.Message) WireMessage {
 	}
 }
 
-func toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage {
+func (a *App) toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage {
 	if webMsg == nil {
 		return WireMessage{}
 	}
 	m := effectiveMessage(webMsg.GetMessage())
-	out, mediaProto := wireMessagePayload(webMsg.GetMessage(), m)
+	out, mediaProto := a.wireMessagePayload(webMsg.GetMessage(), m)
 
 	key := webMsg.GetKey()
 	wireKey := WireKey{
@@ -1610,7 +1610,27 @@ func toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage {
 	}
 }
 
-func wireMessagePayload(raw, effective *waProto.Message) (map[string]any, string) {
+func normalizeQuotedParticipant(participant, selfID string, canonicalize func(string) string) string {
+	participant = strings.TrimSpace(participant)
+	if participant == "" {
+		return ""
+	}
+	if canonicalize != nil {
+		participant = canonicalize(participant)
+	}
+	if strings.TrimSpace(selfID) != "" {
+		selfCanonical := selfID
+		if canonicalize != nil {
+			selfCanonical = canonicalize(selfID)
+		}
+		if participant == selfCanonical {
+			return ""
+		}
+	}
+	return participant
+}
+
+func (a *App) wireMessagePayload(raw, effective *waProto.Message) (map[string]any, string) {
 	msg := map[string]any{}
 	var mediaProto string
 	if txt := effective.GetConversation(); txt != "" {
@@ -1620,7 +1640,16 @@ func wireMessagePayload(raw, effective *waProto.Message) (map[string]any, string
 		entry := map[string]any{"text": ext.GetText()}
 		if ctx := ext.GetContextInfo(); ctx != nil && ctx.GetQuotedMessage() != nil {
 			entry["quotedText"] = quotedText(ctx.GetQuotedMessage())
-			entry["quotedParticipant"] = ctx.GetParticipant()
+			selfID := ""
+			if a != nil && a.client != nil && a.client.Store != nil && a.client.Store.ID != nil {
+				selfID = a.client.Store.ID.String()
+			}
+			entry["quotedParticipant"] = normalizeQuotedParticipant(ctx.GetParticipant(), selfID, func(id string) string {
+				if a == nil {
+					return strings.TrimSpace(id)
+				}
+				return a.canonicalizeChatID(id)
+			})
 		}
 		msg["extendedTextMessage"] = entry
 	}

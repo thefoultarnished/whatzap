@@ -631,6 +631,20 @@ func TestCoreRouteValidation(t *testing.T) {
 	}
 }
 
+func TestNormalizeQuotedParticipantClearsSelfID(t *testing.T) {
+	got := normalizeQuotedParticipant("15551230001@lid", "15551230001@s.whatsapp.net", func(id string) string {
+		switch strings.TrimSpace(id) {
+		case "15551230001@lid":
+			return "15551230001@s.whatsapp.net"
+		default:
+			return strings.TrimSpace(id)
+		}
+	})
+	if got != "" {
+		t.Fatalf("normalizeQuotedParticipant() = %q, want empty", got)
+	}
+}
+
 // File validation.
 func TestValidateSendFileInput(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "sample.png")

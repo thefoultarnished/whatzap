@@ -646,8 +646,11 @@ func (x m) renderMain(w, h int) string {
 			if qText, _ := ext["quotedText"].(string); qText != "" {
 				hasQuoteLine = true
 				qParticipant, _ := ext["quotedParticipant"].(string)
-				qSender := x.nameFor(qParticipant)
-				if qSender == "" {
+				qSender := "Me"
+				if strings.TrimSpace(qParticipant) != "" {
+					qSender = x.nameFor(qParticipant)
+				}
+				if strings.TrimSpace(qSender) == "" {
 					qSender = num(qParticipant)
 				}
 				qText = strings.ReplaceAll(qText, "\n", " ")
