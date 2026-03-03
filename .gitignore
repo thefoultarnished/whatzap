@@ -1,0 +1,41 @@
+# User-specific files
+whitelist.md
+icons.md
+suggest.md
+.claude/
+
+# Build artifacts & binaries
+*.exe
+*.out
+*.so
+*.dylib
+
+# Go cache
+backend/.whatsmeow_cache/
+backend/.gocache/
+go.sum.bak
+*.mod.bak
+
+# Logs
+*.log
+backend/out.json
+
+# Secrets / local config
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local DB artifacts
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Legacy Node.js / React-Ink code 
+node_modules/
+package-lock.json
+.baileys_auth/
+.baileys_cache/
