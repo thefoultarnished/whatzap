@@ -16,22 +16,42 @@ func (x m) View() string {
 	}
 	frameW := max(1, x.w-2)
 	if x.status != "ready" {
-		// Keep the status box inside the viewport.
-		statusInnerH := max(3, x.h-6)
+		outerW := frameW
+		outerH := max(3, x.h-2)
+		innerW := max(1, outerW-2)
+		innerH := max(1, outerH-2)
 		statusBody := x.status
 		title := logoStyle.Render("WhatZap")
 		subtitle := mutedStyle.Render("Terminal WhatsApp client")
 		hint := mutedStyle.Render("No browser. Local session.")
+		statusMsgTemplate := func(body string) string {
+			return title + "\n" + subtitle + "\n\n" + body + "\n\n" + hint
+		}
 		if x.status == "qr" {
 			if x.qrRaw != "" {
-				maxQRW := max(12, frameW-8)
-				maxQRH := max(6, statusInnerH-11)
-				statusBody = renderQR(x.qrRaw, maxQRW, maxQRH)
-				if statusBody == "" {
-					statusBody = x.qrRaw
+				hint = accentStyle.Copy().Bold(false).Render("WhatsApp > Linked Devices > Link a Device")
+				waiting := logoStyle.Render("[" + spinnerFrames[x.spinnerFrame] + " waiting for scan ]")
+				qrMaxW := min(max(12, innerW-6), 56)
+				qrMaxH := min(max(8, innerH-6), 28)
+				qrBody := renderQR(x.qrRaw, qrMaxW, qrMaxH)
+				if qrBody == "" {
+					qrBody = x.qrRaw
 				}
-				statusBody = mutedStyle.Render("[ waiting for scan ]") + "\n\n" + statusBody
-				hint = mutedStyle.Render("WhatsApp > Linked Devices > Link a Device")
+				body := lipgloss.JoinVertical(
+					lipgloss.Center,
+					waiting,
+					"",
+					lipgloss.PlaceHorizontal(innerW, lipgloss.Center, qrBody),
+					"",
+					hint,
+				)
+				content := lipgloss.Place(innerW, innerH, lipgloss.Center, lipgloss.Center, body)
+				return lipgloss.NewStyle().
+					Width(outerW).
+					Height(outerH).
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(brand).
+					Render(content)
 			} else {
 				statusBody = "Generating QR..."
 				hint = mutedStyle.Render("Preparing login QR")
@@ -42,11 +62,14 @@ func (x m) View() string {
 		} else {
 			statusBody = accentStyle.Copy().Bold(false).Render("[" + spinnerFrames[x.spinnerFrame] + "] " + statusBody)
 		}
-		box := baseBoxStyle.Copy().
-			Width(frameW).
-			Height(statusInnerH)
-		msg := title + "\n" + subtitle + "\n\n" + statusBody + "\n\n" + hint
-		return lipgloss.Place(x.w, x.h, lipgloss.Center, lipgloss.Center, box.Render(msg))
+		msg := statusMsgTemplate(statusBody)
+		content := lipgloss.Place(innerW, innerH, lipgloss.Center, lipgloss.Center, msg)
+		return lipgloss.NewStyle().
+			Width(outerW).
+			Height(outerH).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(brand).
+			Render(content)
 	}
 	outerW := frameW
 	outerH := x.h - 2

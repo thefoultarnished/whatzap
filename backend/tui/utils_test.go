@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,19 @@ func TestWrapTextWithPrefixReservesFirstLineWidth(t *testing.T) {
 	want := "alpha\nbeta gamma\ndelta"
 	if got != want {
 		t.Fatalf("wrapTextWithPrefix() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderQRStopsGrowingWhenSpaceAllows(t *testing.T) {
+	currentTheme = Monokai
+	rehashStyles()
+
+	small := renderQR("test-qr-payload", 20, 10)
+	large := renderQR("test-qr-payload", 80, 40)
+
+	smallFirst := strings.Split(small, "\n")[0]
+	largeFirst := strings.Split(large, "\n")[0]
+	if len(largeFirst) != len(smallFirst) {
+		t.Fatalf("expected QR width to stop growing, small=%d large=%d", len(smallFirst), len(largeFirst))
 	}
 }

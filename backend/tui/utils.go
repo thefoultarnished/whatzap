@@ -305,23 +305,44 @@ func renderQR(payload string, maxW, maxH int) string {
 	}
 	rows := len(bitmap)
 	cols := len(bitmap[0])
-	scale := 1
+	downsample := 1
 	if maxW > 0 && cols > maxW {
-		scale = (cols + maxW - 1) / maxW
+		downsample = (cols + maxW - 1) / maxW
 	}
 	if maxH > 0 {
 		vScale := (rows + 2*maxH - 1) / (2 * maxH)
-		if vScale > scale {
-			scale = vScale
+		if vScale > downsample {
+			downsample = vScale
 		}
 	}
-	lines := make([]string, 0, rows/(2*scale)+1)
-	stepY := 2 * scale
-	for y := 0; y < rows; y += stepY {
+	upscale := 1
+	if downsample == 1 {
+		hScale := 1
+		if maxW > 0 {
+			hScale = max(1, maxW/cols)
+		}
+		vScale := 1
+		if maxH > 0 {
+			vScale = max(1, (2*maxH)/rows)
+		}
+		upscale = min(hScale, vScale)
+		if upscale < 1 {
+			upscale = 1
+		}
+		upscale = min(upscale, 1)
+	}
+	virtualRows := rows * upscale
+	virtualCols := cols * upscale
+	lines := make([]string, 0, virtualRows/2+1)
+	for y := 0; y < virtualRows; y += 2 {
 		var line strings.Builder
-		for x := 0; x < cols; x += scale {
-			top := bitmap[y][x]
-			bot := y+scale < rows && bitmap[y+scale][x]
+		for x := 0; x < virtualCols; x++ {
+			srcX := x / upscale
+			top := bitmap[min(rows-1, y/upscale)][srcX]
+			bot := false
+			if y+1 < virtualRows {
+				bot = bitmap[min(rows-1, (y+1)/upscale)][srcX]
+			}
 			switch {
 			case top && bot:
 				line.WriteString(bb)

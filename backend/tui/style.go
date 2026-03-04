@@ -62,7 +62,7 @@ var (
 	spinnerFrames  = []string{"-", "\\", "|", "/"}
 	systemCommands = []string{
 		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
-		"/theme", "/theme1tokyonight", "/theme2catppuccin", "/theme3monokai", "/theme4charcoal", "/theme5aurora",
+		"/theme", "/theme1tokyonight", "/theme2catppuccin", "/theme3monokai", "/theme4charcoal", "/theme5aurora", "/theme6sakura", "/theme7abyssal",
 		"/mouseon", "/mouseoff",
 	}
 	chatCommands = []string{

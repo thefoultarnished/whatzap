@@ -982,7 +982,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		x.openEmojiPicker()
 		return nil, true
 	case txt == "/theme":
-		return x.setTopBar("Themes: /theme1tokyonight /theme2catppuccin /theme3monokai /theme4charcoal /theme5aurora"), true
+		return x.setTopBar("Themes: /theme1tokyonight /theme2catppuccin /theme3monokai /theme4charcoal /theme5aurora /theme6sakura /theme7abyssal"), true
 	case txt == "/theme1tokyonight":
 		currentTheme = TokyoNight
 		currentConfig.ThemeName = "tokyonight"
@@ -1018,6 +1018,20 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Aurora"), true
+	case txt == "/theme6sakura":
+		currentTheme = Sakura
+		currentConfig.ThemeName = "sakura"
+		saveConfig()
+		rehashStyles()
+		x.mainCache.result = ""
+		return x.setTopBar("Theme: Sakura"), true
+	case txt == "/theme7abyssal":
+		currentTheme = Abyssal
+		currentConfig.ThemeName = "abyssal"
+		saveConfig()
+		rehashStyles()
+		x.mainCache.result = ""
+		return x.setTopBar("Theme: Abyssal"), true
 	case txt == "/mouseon":
 		x.mouseEnabled = true
 		currentConfig.MouseEnabled = true

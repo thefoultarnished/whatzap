@@ -21,6 +21,8 @@ func main() {
 	}
 
 	switch currentConfig.ThemeName {
+	case "abyssal":
+		currentTheme = Abyssal
 	case "aurora":
 		currentTheme = Aurora
 	case "catppuccin":
@@ -29,6 +31,8 @@ func main() {
 		currentTheme = Charcoal
 	case "monokai":
 		currentTheme = Monokai
+	case "sakura":
+		currentTheme = Sakura
 	default:
 		currentTheme = TokyoNight
 	}
