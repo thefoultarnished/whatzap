@@ -23,6 +23,8 @@ var (
 		ReceivedText:          "#bab0f0", // soft periwinkle — incoming, purple family
 		SentName:              "#9ece6a", // brand green — "me" in groups
 		ReceivedName:          "#bb9af7", // vivid purple — "them", bold hierarchy
+		QuotedSentText:        "#8ca38b", // 50% blend sentText+muted — ghost green for quoted own
+		QuotedReceivedText:    "#8887bc", // 50% blend receivedText+muted — ghost purple for quoted theirs
 		BadgeInk:              "#1a1b26",
 		ButtonInk:             "#1a1b26",
 		TagInk:                "#1a1b26",
@@ -60,6 +62,8 @@ var (
 		ReceivedText:          "#dcd0f5", // soft mauve-lavender — incoming, purple family
 		SentName:              "#a6e3a1", // brand green — "me" label
 		ReceivedName:          "#cba4f7", // vivid mauve — "them" label
+		QuotedSentText:        "#9eafa5", // 50% blend sentText+muted — ghost sage for quoted own
+		QuotedReceivedText:    "#a4a0bd", // 50% blend receivedText+muted — ghost mauve for quoted theirs
 		BadgeInk:              "#1e1e2e",
 		ButtonInk:             "#1e1e2e",
 		TagInk:                "#1e1e2e",
@@ -97,6 +101,8 @@ var (
 		ReceivedText:          "#c0eeff", // soft cyan-white — incoming, accent family
 		SentName:              "#a6e22e", // brand green — "me" label
 		ReceivedName:          "#ae81ff", // purple — "them", clearly distinct
+		QuotedSentText:        "#a7b482", // 50% blend sentText+muted — ghost olive for quoted own
+		QuotedReceivedText:    "#9aafae", // 50% blend receivedText+muted — ghost cyan for quoted theirs
 		BadgeInk:              "#1f1f1f",
 		ButtonInk:             "#1f1f1f",
 		TagInk:                "#1f1f1f",
@@ -134,6 +140,8 @@ var (
 		ReceivedText:          "#bebebe", // clearly dimmer — their messages
 		SentName:              "#ebebeb", // brightest gray for "me"
 		ReceivedName:          "#adadad", // distinctly subordinate
+		QuotedSentText:        "#acacac", // 50% blend sentText+muted — dimmer gray for quoted own
+		QuotedReceivedText:    "#939393", // 50% blend receivedText+muted — darker gray for quoted theirs
 		BadgeInk:              "#1a1a1a",
 		ButtonInk:             "#1a1a1a",
 		TagInk:                "#1a1a1a",
@@ -171,6 +179,8 @@ var (
 		ReceivedText:          "#e0d8ff", // soft violet — incoming, DISTINCT hue from sent
 		SentName:              "#50fa7b", // brand electric green — "me"
 		ReceivedName:          "#bd93f9", // violet — "them", clearly distinct from green
+		QuotedSentText:        "#88a39b", // 50% blend sentText+muted — ghost mint for quoted own
+		QuotedReceivedText:    "#928fac", // 50% blend receivedText+muted — ghost violet for quoted theirs
 		BadgeInk:              "#0d1117",
 		ButtonInk:             "#0d1117",
 		TagInk:                "#0d1117",
@@ -208,6 +218,8 @@ var (
 		ReceivedText:          "#f0e0ff", // soft lavender — "theirs", distinct hue
 		SentName:              "#ffb7d5", // brand light-pink — "me" label
 		ReceivedName:          "#e879f9", // vivid orchid — "them", pops against pink
+		QuotedSentText:        "#c5a4b2", // 50% blend sentText+muted — ghost rose for quoted own
+		QuotedReceivedText:    "#bda0b7", // 50% blend receivedText+muted — ghost lavender for quoted theirs
 		BadgeInk:              "#1a0d14",
 		ButtonInk:             "#1a0d14",
 		TagInk:                "#1a0d14",
@@ -245,6 +257,8 @@ var (
 		ReceivedText:          "#b8d0ff", // soft electric blue — incoming, distinct hue
 		SentName:              "#00e5c8", // brand teal — "me", glowing
 		ReceivedName:          "#7b6cff", // deep violet — "them", clearly distinct
+		QuotedSentText:        "#6a9da1", // 50% blend sentText+muted — ghost teal for quoted own
+		QuotedReceivedText:    "#728dac", // 50% blend receivedText+muted — ghost blue for quoted theirs
 		BadgeInk:              "#020c14",
 		ButtonInk:             "#020c14",
 		TagInk:                "#020c14",

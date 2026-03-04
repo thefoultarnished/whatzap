@@ -1069,6 +1069,8 @@ func rehashStyles() {
 	receivedText = lipgloss.Color(currentTheme.ReceivedText)
 	sentName = lipgloss.Color(currentTheme.SentName)
 	receivedName = lipgloss.Color(currentTheme.ReceivedName)
+	quotedSentText = lipgloss.Color(currentTheme.QuotedSentText)
+	quotedReceivedText = lipgloss.Color(currentTheme.QuotedReceivedText)
 	badgeInk = lipgloss.Color(currentTheme.BadgeInk)
 	buttonInk = lipgloss.Color(currentTheme.ButtonInk)
 	tagInk = lipgloss.Color(currentTheme.TagInk)

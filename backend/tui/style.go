@@ -55,6 +55,7 @@ var (
 	imageTag, videoTag, audioTag, fileTag, stickerTag                  lipgloss.Color
 	contactTag, pollTag, locationTag, anomalyTag                       lipgloss.Color
 	sentText, receivedText, sentName, receivedName                     lipgloss.Color
+	quotedSentText, quotedReceivedText                                 lipgloss.Color
 	badgeInk, buttonInk, tagInk, cursorColor, qrLight, qrDark          lipgloss.Color
 	shortcutActive, sidebarActiveBg, sidebarActiveUnreadBg             lipgloss.Color
 	replyPreviewBg, messageSelectedBg, mediaTokenBg, mediaTokenPulseBg lipgloss.Color

@@ -38,7 +38,8 @@ type Theme struct {
 	ImageTag, VideoTag, AudioTag, FileTag          string
 	StickerTag                                     string
 	ContactTag, PollTag, LocationTag, AnomalyTag   string
-	SentText, ReceivedText, SentName, ReceivedName string
+	SentText, ReceivedText, SentName, ReceivedName     string
+	QuotedSentText, QuotedReceivedText                 string
 	BadgeInk, ButtonInk, TagInk, Cursor            string
 	QRLight, QRDark                                string
 	ShortcutActive                                 string

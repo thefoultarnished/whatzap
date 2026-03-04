@@ -1622,7 +1622,7 @@ func (a *App) toWireMessage(evt *events.Message) WireMessage {
 	info := evt.Info
 	chatID := info.Chat.String()
 	effective := effectiveMessage(evt.Message)
-	msg, mediaProto := a.wireMessagePayload(evt.Message, effective)
+	msg, mediaProto := a.wireMessagePayload(evt.Message, effective, chatID, info.IsGroup)
 
 	key := WireKey{
 		ID:        info.ID,
@@ -1646,10 +1646,10 @@ func (a *App) toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage
 	if webMsg == nil {
 		return WireMessage{}
 	}
-	m := effectiveMessage(webMsg.GetMessage())
-	out, mediaProto := a.wireMessagePayload(webMsg.GetMessage(), m)
-
 	key := webMsg.GetKey()
+	m := effectiveMessage(webMsg.GetMessage())
+	chatID := key.GetRemoteJID()
+	out, mediaProto := a.wireMessagePayload(webMsg.GetMessage(), m, chatID, strings.HasSuffix(chatID, "@g.us"))
 	wireKey := WireKey{
 		ID:          key.GetID(),
 		RemoteJID:   key.GetRemoteJID(),
@@ -1667,6 +1667,16 @@ func (a *App) toWireMessageFromHistory(webMsg *waWeb.WebMessageInfo) WireMessage
 }
 
 func normalizeQuotedParticipant(participant, selfID string, canonicalize func(string) string) string {
+	phoneIdentity := func(jid string) string {
+		local := phoneFromJID(jid)
+		local = strings.SplitN(local, ":", 2)[0]
+		return strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, local)
+	}
 	participant = strings.TrimSpace(participant)
 	if participant == "" {
 		return ""
@@ -1679,14 +1689,36 @@ func normalizeQuotedParticipant(participant, selfID string, canonicalize func(st
 		if canonicalize != nil {
 			selfCanonical = canonicalize(selfID)
 		}
-		if participant == selfCanonical {
+		if participant == selfCanonical || phoneIdentity(participant) == phoneIdentity(selfCanonical) {
 			return ""
 		}
 	}
 	return participant
 }
 
-func (a *App) wireMessagePayload(raw, effective *waProto.Message) (map[string]any, string) {
+func phoneIdentity(jid string) string {
+	local := phoneFromJID(jid)
+	local = strings.SplitN(local, ":", 2)[0]
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, local)
+}
+
+func quotedFromMeForChat(chatID, quotedParticipant string, isGroup bool) bool {
+	quotedParticipant = strings.TrimSpace(quotedParticipant)
+	if quotedParticipant == "" {
+		return true
+	}
+	if isGroup {
+		return false
+	}
+	return phoneIdentity(quotedParticipant) != "" && phoneIdentity(quotedParticipant) != phoneIdentity(chatID)
+}
+
+func (a *App) wireMessagePayload(raw, effective *waProto.Message, chatID string, isGroup bool) (map[string]any, string) {
 	msg := map[string]any{}
 	var mediaProto string
 	if txt := effective.GetConversation(); txt != "" {
@@ -1706,6 +1738,7 @@ func (a *App) wireMessagePayload(raw, effective *waProto.Message) (map[string]an
 				}
 				return a.canonicalizeChatID(id)
 			})
+			entry["quotedFromMe"] = quotedFromMeForChat(chatID, fmt.Sprint(entry["quotedParticipant"]), isGroup)
 		}
 		msg["extendedTextMessage"] = entry
 	}

@@ -687,6 +687,24 @@ func TestNormalizeQuotedParticipantClearsSelfID(t *testing.T) {
 	}
 }
 
+func TestNormalizeQuotedParticipantClearsSelfIDByPhoneMatch(t *testing.T) {
+	got := normalizeQuotedParticipant("15551230001:7@s.whatsapp.net", "15551230001@s.whatsapp.net", func(id string) string {
+		return strings.TrimSpace(id)
+	})
+	if got != "" {
+		t.Fatalf("normalizeQuotedParticipant() by phone match = %q, want empty", got)
+	}
+}
+
+func TestQuotedFromMeForOneToOneChatTreatsNonRemoteAsSelf(t *testing.T) {
+	if !quotedFromMeForChat("15551230001@s.whatsapp.net", "15559990000@s.whatsapp.net", false) {
+		t.Fatalf("expected 1:1 quoted participant different from remote chat to be treated as self")
+	}
+	if quotedFromMeForChat("15551230001@s.whatsapp.net", "15551230001@s.whatsapp.net", false) {
+		t.Fatalf("expected remote participant in 1:1 chat to stay non-self")
+	}
+}
+
 // File validation.
 func TestValidateSendFileInput(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "sample.png")

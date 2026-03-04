@@ -340,12 +340,18 @@ func (x m) renderReplyBar(contentW, rightW, mainH int, typedInput string) string
 	if len([]rune(rText)) > 60 {
 		rText = string([]rune(rText)[:60]) + "..."
 	}
+	quoteTextColor := quotedReceivedText
+	nameColor := receivedName
+	if displayReplyTo.Key.FromMe {
+		quoteTextColor = quotedSentText
+		nameColor = sentName
+	}
 	return lipgloss.NewStyle().
 		Width(contentW).
 		Foreground(muted).
 		Render(lipgloss.NewStyle().Foreground(accent).Render("  -> ") +
-			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(rSender+": ") +
-			lipgloss.NewStyle().Foreground(muted).Render(rText) +
+			lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(rSender+": ") +
+			lipgloss.NewStyle().Foreground(quoteTextColor).Render(rText) +
 			lipgloss.NewStyle().Foreground(muted).Render(atCancelHint))
 }
 
@@ -543,17 +549,27 @@ func (x m) renderMain(w, h int) string {
 			previewReplyID = msg.Key.ID
 		}
 	}
-	reactionsFor := map[string][]string{}
+	type reactionRender struct {
+		emoji string
+		name  string
+		isMe  bool
+	}
+	reactionsFor := map[string][]reactionRender{}
 	for _, msg := range items {
 		if rxn, ok := msg.Message["reactionMessage"].(map[string]any); ok {
 			targetID, _ := rxn["targetMsgID"].(string)
 			emoji, _ := rxn["emoji"].(string)
 			if targetID != "" && emoji != "" {
 				rSender := "Me"
+				rIsMe := msg.Key.FromMe
 				if !msg.Key.FromMe {
 					rSender = truncate(x.senderNameForMsg(msg), 10)
 				}
-				reactionsFor[targetID] = append(reactionsFor[targetID], emoji+" "+rSender)
+				reactionsFor[targetID] = append(reactionsFor[targetID], reactionRender{
+					emoji: emoji,
+					name:  rSender,
+					isMe:  rIsMe,
+				})
 			}
 		}
 	}
@@ -639,29 +655,27 @@ func (x m) renderMain(w, h int) string {
 		block := []string{}
 		hasQuoteLine := false
 
-		reactionStr := ""
+		reactionLinePlain := ""
+		reactionLine := ""
 		if rxns, ok := reactionsFor[msg.Key.ID]; ok && len(rxns) > 0 {
-			names := map[string][]string{}
-			order := []string{}
-			for _, r := range rxns {
-				parts := strings.SplitN(r, " ", 2)
-				emoji := parts[0]
-				name := ""
-				if len(parts) > 1 {
-					name = parts[1]
+			reactionPlainParts := []string{}
+			reactionStyledParts := []string{}
+			firstReactionColor := receivedName
+			for i, rxn := range rxns {
+				reactionColor := receivedName
+				if rxn.isMe {
+					reactionColor = sentName
 				}
-				if len(names[emoji]) == 0 {
-					order = append(order, emoji)
+				if i == 0 {
+					firstReactionColor = reactionColor
 				}
-				names[emoji] = append(names[emoji], name)
+				reactionPlainParts = append(reactionPlainParts, rxn.emoji+" "+rxn.name)
+				reactionStyledParts = append(reactionStyledParts,
+					applySelectedBG(lipgloss.NewStyle().Foreground(reactionColor).Bold(true)).Render(rxn.emoji+" "+rxn.name))
 			}
-			pills := []string{}
-			for _, e := range order {
-				pills = append(pills, e+" "+strings.Join(names[e], ", "))
-			}
-			reactionStr = applySelectedBG(mutedStyle).Render("[") +
-				applySelectedBG(amberStyle).Render(strings.Join(pills, "  ")) +
-				applySelectedBG(mutedStyle).Render("]")
+			reactionLinePlain = "  ╰─ " + strings.Join(reactionPlainParts, ", ")
+			reactionPrefix := applySelectedBG(lipgloss.NewStyle().Foreground(firstReactionColor)).Render("  ╰─ ")
+			reactionLine = reactionPrefix + strings.Join(reactionStyledParts, applySelectedBG(mutedStyle).Render(", "))
 		}
 
 		quotePlain := ""
@@ -669,23 +683,31 @@ func (x m) renderMain(w, h int) string {
 			if qText, _ := ext["quotedText"].(string); qText != "" {
 				hasQuoteLine = true
 				qParticipant, _ := ext["quotedParticipant"].(string)
+				qFromMe, _ := ext["quotedFromMe"].(bool)
 				qSender := "Me"
-				if strings.TrimSpace(qParticipant) != "" {
+				if !qFromMe && strings.TrimSpace(qParticipant) != "" {
 					qSender = x.nameFor(qParticipant)
 				}
-				if strings.TrimSpace(qSender) == "" {
+				if !qFromMe && strings.TrimSpace(qSender) == "" {
 					qSender = num(qParticipant)
 				}
 				qText = strings.ReplaceAll(qText, "\n", " ")
 				if len([]rune(qText)) > 50 {
 					qText = string([]rune(qText)[:50]) + "..."
 				}
-				quoteText := "  ╭─ " +
-					lipgloss.NewStyle().Foreground(muted).Bold(true).Render(qSender+": ") +
-					lipgloss.NewStyle().Foreground(muted).Italic(true).Render(qText)
-				quotePlain = "  ╭─ " + qSender + ": " + qText
-				quoteLine := applySelectedBG(lipgloss.NewStyle().Foreground(muted)).Render(quoteText)
-				block = append(block, quoteLine)
+				qIsMe := qFromMe
+				qSenderColor := receivedName
+				qTextColor := receivedText
+				if qIsMe {
+					qSenderColor = sentName
+					qTextColor = sentText
+				}
+				quotePrefix := "  ╭─ "
+				quoteText := applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
+					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
+					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText)
+				quotePlain = quotePrefix + qSender + ": " + qText
+				block = append(block, quoteText)
 			}
 		}
 		outgoingBlockW := 0
@@ -696,18 +718,19 @@ func (x m) renderMain(w, h int) string {
 			for i, ln := range wrapped {
 				lineMeasure := ln
 				if i == len(wrapped)-1 {
-					if reactionStr != "" {
-						lineMeasure += " " + strings.Join(strings.Fields(strings.ReplaceAll(reactionStr, "[", " [ ")), "")
-					}
 					lineMeasure += "  " + timeStr + receiptText + " "
 				} else {
 					lineMeasure += " "
 				}
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(lineMeasure))
 			}
+			if reactionLinePlain != "" {
+				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(reactionLinePlain))
+			}
 			outgoingBlockW = min(outgoingBlockW, max(1, w-2))
 		}
 		indent := outgoingMessageIndent(max(1, w-2), outgoingBlockW, msg.Key.FromMe)
+		lastBodyPlainW := 0
 		for i, ln := range wrapped {
 			bodyStyle := applySelectedBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing))
 			tokenStyle := applySelectedBG(lipgloss.NewStyle().
@@ -723,9 +746,6 @@ func (x m) renderMain(w, h int) string {
 			}
 			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg))
 			if i == len(wrapped)-1 {
-				if reactionStr != "" {
-					lineParts = append(lineParts, " ", reactionStr)
-				}
 				lineParts = append(lineParts, timeStyled)
 			}
 			if msg.Key.FromMe {
@@ -739,7 +759,20 @@ func (x m) renderMain(w, h int) string {
 					bodyStyled = indent + bodyStyled
 				}
 			}
+			lastBodyPlainW = runeDisplayWidth(ln)
+			if !msg.Key.FromMe && i == 0 {
+				lastBodyPlainW += runeDisplayWidth(senderName + ": ")
+			}
 			block = append(block, bodyStyled)
+		}
+		if reactionLine != "" {
+			reactionOffset := max(0, lastBodyPlainW-runeDisplayWidth(reactionLinePlain))
+			if msg.Key.FromMe {
+				reactionLine = indent + strings.Repeat(" ", reactionOffset) + reactionLine
+			} else {
+				reactionLine = strings.Repeat(" ", reactionOffset) + reactionLine
+			}
+			block = append(block, reactionLine)
 		}
 
 		if selectedBG != "" {
@@ -940,11 +973,11 @@ func (x m) senderNameForMsg(msg wireMsg) string {
 
 func (x m) msgIDAtLine(lineIdx, w, h int) string {
 	items := x.msgs[x.active]
-	reactionsForLine := map[string]bool{}
+	reactionsForLine := map[string]int{}
 	for _, msg := range items {
 		if rxn, ok := msg.Message["reactionMessage"].(map[string]any); ok {
 			if tid, _ := rxn["targetMsgID"].(string); tid != "" {
-				reactionsForLine[tid] = true
+				reactionsForLine[tid]++
 			}
 		}
 	}
@@ -974,6 +1007,9 @@ func (x m) msgIDAtLine(lineIdx, w, h int) string {
 		}
 		lineCount := len(wrapped)
 		if hasQuote {
+			lineCount++
+		}
+		if reactionsForLine[msg.Key.ID] > 0 {
 			lineCount++
 		}
 		block := make([]string, lineCount)
@@ -1019,11 +1055,11 @@ func (x m) atReplyMsg(w, h int, label string) *wireMsg {
 		return nil
 	}
 	items := x.msgs[x.active]
-	reactionsFor := map[string]bool{}
+	reactionsFor := map[string]int{}
 	for _, msg := range items {
 		if rxn, ok := msg.Message["reactionMessage"].(map[string]any); ok {
 			if tid, _ := rxn["targetMsgID"].(string); tid != "" {
-				reactionsFor[tid] = true
+				reactionsFor[tid]++
 			}
 		}
 	}
@@ -1057,6 +1093,9 @@ func (x m) atReplyMsg(w, h int, label string) *wireMsg {
 		}
 		lineCount := len(wrapped)
 		if hasQuote {
+			lineCount++
+		}
+		if reactionsFor[msg.Key.ID] > 0 {
 			lineCount++
 		}
 		timeLine := len(wrapped)
