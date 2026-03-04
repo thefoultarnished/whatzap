@@ -68,7 +68,17 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "message":
 			var wm wireMsg
 			if err := json.Unmarshal(v.evt.Payload, &wm); err == nil {
-				x.msgs[wm.Key.RemoteJID] = append(x.msgs[wm.Key.RemoteJID], wm)
+				exists := false
+				for _, existing := range x.msgs[wm.Key.RemoteJID] {
+					if wm.Key.ID != "" && existing.Key.ID == wm.Key.ID {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					x.msgs[wm.Key.RemoteJID] = append(x.msgs[wm.Key.RemoteJID], wm)
+				}
+				x.mainCache.result = ""
 				if !wm.Key.FromMe && wm.Key.ID != "" {
 					x.flashUntil[wm.Key.ID] = time.Now().Add(5 * time.Second)
 					x.msgActivityUntil = time.Now().Add(3 * time.Second)
@@ -146,6 +156,8 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, nextCursorBlink()
 	case spinnerTickMsg:
 		x.spinnerFrame = (x.spinnerFrame + 1) % len(spinnerFrames)
+		x.advanceSidebarHighlight()
+		x.advanceSidebarMarquee()
 		return x, nextSpinnerTick()
 	case chatsMsg:
 		if v.err != nil {
@@ -174,10 +186,38 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.msgs[v.chatID] = v.msgs
 	case sentMsg:
 		if v.err != nil {
+			if v.pendingID != "" {
+				if msgs, ok := x.msgs[v.chatID]; ok {
+					filtered := msgs[:0]
+					for _, msg := range msgs {
+						if msg.Key.ID == v.pendingID {
+							continue
+						}
+						filtered = append(filtered, msg)
+					}
+					x.msgs[v.chatID] = filtered
+				}
+			}
+			x.mainCache.result = ""
 			x.err = ""
 			return x, x.setTopBar(v.err.Error())
 		}
-		x.msgs[v.chatID] = append(x.msgs[v.chatID], v.msg)
+		replaced := false
+		if v.pendingID != "" {
+			if msgs, ok := x.msgs[v.chatID]; ok {
+				for i := range msgs {
+					if msgs[i].Key.ID == v.pendingID {
+						msgs[i] = v.msg
+						replaced = true
+						break
+					}
+				}
+				x.msgs[v.chatID] = msgs
+			}
+		}
+		if !replaced {
+			x.msgs[v.chatID] = append(x.msgs[v.chatID], v.msg)
+		}
 		x.mainCache.result = ""
 		x.scroll = 0
 		x.msgActivityUntil = time.Now().Add(3 * time.Second)
@@ -357,6 +397,37 @@ func (x m) activeChatWhitelisted() bool {
 
 func (x m) chatInputLocked() bool {
 	return x.active != "" && !x.activeChatWhitelisted()
+}
+
+func optimisticOutgoingMessage(chatID, text, pendingID string, replyTo *wireMsg) wireMsg {
+	msg := wireMsg{
+		MessageTimestamp: time.Now().Unix(),
+		ReceiptStatus:    "sent",
+	}
+	msg.Key.ID = pendingID
+	msg.Key.RemoteJID = chatID
+	msg.Key.FromMe = true
+	if replyTo != nil {
+		participant := replyTo.Key.RemoteJID
+		if replyTo.Key.Participant != "" {
+			participant = replyTo.Key.Participant
+		}
+		quotedFromMe := replyTo.Key.FromMe
+		if quotedFromMe {
+			participant = ""
+		}
+		msg.Message = map[string]any{
+			"extendedTextMessage": map[string]any{
+				"text":              text,
+				"quotedText":        renderMessageBody(replyTo.Message),
+				"quotedParticipant": participant,
+				"quotedFromMe":      quotedFromMe,
+			},
+		}
+		return msg
+	}
+	msg.Message = map[string]any{"conversation": text}
+	return msg
 }
 
 func (x *m) clearChatComposer() {
@@ -682,7 +753,15 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if x.demoMode {
 				return x, demoSend(x.active, txt, replyTo)
 			}
-			return x, send(x.client, x.baseURL, x.active, txt, replyTo)
+			pendingID := fmt.Sprintf("local-%d", time.Now().UnixNano())
+			x.msgs[x.active] = append(x.msgs[x.active], optimisticOutgoingMessage(x.active, txt, pendingID, replyTo))
+			if x.mainCache != nil {
+				x.mainCache.result = ""
+			}
+			x.scroll = 0
+			x.msgActivityUntil = time.Now().Add(3 * time.Second)
+			x.msgActivityType = "sent"
+			return x, send(x.client, x.baseURL, x.active, txt, replyTo, pendingID)
 		default:
 			if x.sidebarFocused {
 				return x, nil
@@ -977,7 +1056,7 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 			}
 		}
 		x.replyTo = nil
-		return sendFile(x.client, x.baseURL, x.active, kind, cmd.path, cmd.caption), true
+		return sendFile(x.client, x.baseURL, x.active, kind, cmd.path, cmd.caption, ""), true
 	case txt == "/emoji":
 		x.openEmojiPicker()
 		return nil, true
@@ -1213,6 +1292,7 @@ func (x *m) ensureSideVisible(viewRows int) {
 		x.sideScroll = x.sel - viewRows + 1
 	}
 }
+
 func (x m) sideViewRows() int {
 	outerH := x.h - 2
 	if outerH <= 0 {
@@ -1221,6 +1301,130 @@ func (x m) sideViewRows() int {
 	sideH := outerH - 5
 	return max(1, sideH-3)
 }
+
+func (x m) sidePaneWidth() int {
+	frameW := max(1, x.w-2)
+	outerW := frameW
+	contentW := outerW
+	return min(28, max(24, contentW/3))
+}
+
+func (x m) currentSidebarMarqueeKey() string {
+	navActive := x.mode != "chat" || x.sidebarFocused
+	if !navActive {
+		return ""
+	}
+	f := x.filtered()
+	if len(f) == 0 || x.sel < 0 || x.sel >= len(f) {
+		return ""
+	}
+	return x.sidebarTab + ":" + f[x.sel].ID
+}
+
+func (x *m) syncSidebarHighlight() {
+	key := x.currentSidebarMarqueeKey()
+	if key == "" {
+		x.sidebarHighlightKey = ""
+		x.sidebarHighlightInset = 0
+		return
+	}
+	if key != x.sidebarHighlightKey {
+		x.sidebarHighlightKey = key
+		x.sidebarHighlightInset = 0
+	}
+}
+
+func (x *m) advanceSidebarHighlight() {
+	x.syncSidebarHighlight()
+	if x.sidebarHighlightKey == "" {
+		return
+	}
+	if x.sidebarHighlightInset < 1 {
+		x.sidebarHighlightInset++
+	}
+}
+
+func (x m) currentSidebarMarqueeLabel() (string, int) {
+	f := x.filtered()
+	if len(f) == 0 || x.sel < 0 || x.sel >= len(f) {
+		return "", 0
+	}
+	sideW := x.sidePaneWidth()
+	rowWidth := max(1, sideW-2)
+	nameWidth := max(1, rowWidth-1)
+	return fmt.Sprintf("%d. %s", x.sel+1, x.name(f[x.sel])), nameWidth
+}
+
+func (x *m) resetSidebarMarquee() {
+	x.sidebarMarqueeOffset = 0
+	x.sidebarMarqueePause = 8
+	x.sidebarMarqueeDir = 1
+	x.sidebarMarqueeTick = 0
+}
+
+func (x *m) advanceSidebarMarquee() {
+	x.syncSidebarHighlight()
+	key := x.currentSidebarMarqueeKey()
+	if key == "" {
+		x.sidebarMarqueeKey = ""
+		x.sidebarMarqueeOffset = 0
+		x.sidebarMarqueePause = 0
+		x.sidebarMarqueeDir = 1
+		x.sidebarMarqueeTick = 0
+		return
+	}
+	if key != x.sidebarMarqueeKey {
+		x.sidebarMarqueeKey = key
+		x.resetSidebarMarquee()
+		return
+	}
+	label, width := x.currentSidebarMarqueeLabel()
+	if graphemeCount(label) <= width {
+		x.sidebarMarqueeOffset = 0
+		x.sidebarMarqueePause = 0
+		x.sidebarMarqueeDir = 1
+		x.sidebarMarqueeTick = 0
+		return
+	}
+	maxOffset := graphemeCount(label) - width
+	if maxOffset <= 0 {
+		x.sidebarMarqueeOffset = 0
+		x.sidebarMarqueeTick = 0
+		return
+	}
+	if x.sidebarMarqueePause > 0 {
+		x.sidebarMarqueePause--
+		return
+	}
+	x.sidebarMarqueeTick = (x.sidebarMarqueeTick + 1) % 3
+	if x.sidebarMarqueeTick != 0 {
+		return
+	}
+	if x.sidebarMarqueeDir <= 0 {
+		if x.sidebarMarqueeOffset > 0 {
+			x.sidebarMarqueeOffset--
+			if x.sidebarMarqueeOffset == 0 {
+				x.sidebarMarqueeDir = 1
+				x.sidebarMarqueePause = 8
+			}
+			return
+		}
+		x.sidebarMarqueeDir = 1
+		x.sidebarMarqueePause = 8
+		return
+	}
+	if x.sidebarMarqueeOffset < maxOffset {
+		x.sidebarMarqueeOffset++
+		if x.sidebarMarqueeOffset == maxOffset {
+			x.sidebarMarqueeDir = -1
+			x.sidebarMarqueePause = 8
+		}
+		return
+	}
+	x.sidebarMarqueeDir = -1
+	x.sidebarMarqueePause = 8
+}
+
 func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 	f := x.filtered()
 	if len(f) == 0 {

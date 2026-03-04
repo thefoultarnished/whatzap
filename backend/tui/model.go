@@ -38,8 +38,8 @@ type Theme struct {
 	ImageTag, VideoTag, AudioTag, FileTag          string
 	StickerTag                                     string
 	ContactTag, PollTag, LocationTag, AnomalyTag   string
-	SentText, ReceivedText, SentName, ReceivedName     string
-	QuotedSentText, QuotedReceivedText                 string
+	SentText, ReceivedText, SentName, ReceivedName string
+	QuotedSentText, QuotedReceivedText             string
 	BadgeInk, ButtonInk, TagInk, Cursor            string
 	QRLight, QRDark                                string
 	ShortcutActive                                 string
@@ -133,6 +133,13 @@ type m struct {
 	restartRequested                         bool
 	lastTypeTime                             time.Time
 	identityVersion                          int
+	sidebarMarqueeOffset                     int
+	sidebarMarqueePause                      int
+	sidebarMarqueeDir                        int
+	sidebarMarqueeKey                        string
+	sidebarMarqueeTick                       int
+	sidebarHighlightKey                      string
+	sidebarHighlightInset                    int
 	sidebarCache                             *sidebarCache
 	mainCache                                *renderCache
 	inputBuf                                 string
@@ -169,9 +176,10 @@ type msgsMsg struct {
 	err    error
 }
 type sentMsg struct {
-	chatID string
-	msg    wireMsg
-	err    error
+	chatID    string
+	pendingID string
+	msg       wireMsg
+	err       error
 }
 type logoutMsg struct {
 	msg string

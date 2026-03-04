@@ -162,7 +162,7 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 		if x.demoMode {
 			connText = lipgloss.NewStyle().Foreground(brand).Render(" demo")
 		}
-		statusPart = mutedStyle.Render("[") + wifi + connText + mutedStyle.Render("]") + " "
+		statusPart = " " + wifi + connText + " "
 	}
 
 	statusW := lipgloss.Width(statusPart)
@@ -418,7 +418,8 @@ func (x m) renderSearchBox() string {
 	if searchFocused {
 		searchValue = x.searchInput
 	}
-	searchIcon := mutedStyle.Render("⌕ ")
+	searchIconText := "⌕ "
+	searchIcon := mutedStyle.Render(searchIconText)
 	searchLine := searchIcon
 	if searchValue == "" && !searchFocused {
 		searchLine += mutedStyle.Render("search [Alt+S]")
@@ -447,40 +448,41 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 		_, whitelisted := x.whitelist[num(c.ID)]
 
 		rowBase := lipgloss.NewStyle()
-		markerStyle := lipgloss.NewStyle().Foreground(muted)
 		if highlighted {
 			bg := brand
 			if !whitelisted {
 				bg = amber
 			}
 			rowBase = rowBase.Background(bg).Foreground(buttonInk).Bold(isSel && navActive)
-			markerStyle = markerStyle.Background(bg).Foreground(buttonInk)
 		} else if isActive {
 			activeBg := sidebarActiveBg
 			if !whitelisted {
 				activeBg = sidebarActiveUnreadBg
 			}
 			rowBase = rowBase.Background(activeBg).Foreground(accent)
-			markerStyle = markerStyle.Background(activeBg).Foreground(accent)
 		}
 
-		marker := "  "
-		if isActive {
-			marker = "| "
-		}
 		rowWidth := max(1, w-2)
-		contentWidth := rowWidth - 1
-		if contentWidth < 1 {
-			contentWidth = 1
-		}
-		nameWidth := contentWidth - 2
-		if nameWidth < 1 {
-			nameWidth = 1
-		}
+		nameWidth := max(1, rowWidth-1)
 
-		nameText := fmt.Sprintf("%d. %s", i+1, truncate(x.name(c), max(8, w-10)))
-		nameText = truncate(nameText, nameWidth)
-		line := markerStyle.Render(marker) + rowBase.Render(padRight(nameText, nameWidth))
+		nameText := fmt.Sprintf("%d. %s", i+1, x.name(c))
+		if highlighted && graphemeCount(nameText) > nameWidth {
+			offset := x.sidebarMarqueeOffset
+			maxOffset := graphemeCount(nameText) - nameWidth
+			if offset < 0 {
+				offset = 0
+			}
+			if offset > maxOffset {
+				offset = maxOffset
+			}
+			nameText = graphemeWindow(nameText, offset, nameWidth)
+		} else {
+			nameText = truncate(nameText, nameWidth)
+		}
+		if highlighted {
+			nameText = strings.Repeat(" ", x.sidebarHighlightInset) + nameText
+		}
+		line := rowBase.Render(padRight(nameText, nameWidth))
 		if hasUnread {
 			line += rowBase.Copy().Foreground(amber).Render("●")
 		} else {

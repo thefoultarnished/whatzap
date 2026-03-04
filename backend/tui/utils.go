@@ -150,6 +150,27 @@ func graphemeSplitFirst(s string) (first, rest string) {
 	return first, b.String()
 }
 
+func graphemeWindow(s string, start, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	g := uniseg.NewGraphemes(s)
+	var b strings.Builder
+	i := 0
+	written := 0
+	for g.Next() {
+		if i >= start {
+			b.WriteString(g.Str())
+			written++
+			if written >= n {
+				break
+			}
+		}
+		i++
+	}
+	return b.String()
+}
+
 func countEmojiHeuristic(s string) int {
 	count := 0
 	for len(s) > 0 {

@@ -260,3 +260,82 @@ func TestRenderMainOutgoingReactionKeepsMessageIndentedRight(t *testing.T) {
 		t.Fatalf("reaction body did not use reactor name color: %q", rendered)
 	}
 }
+
+func TestRenderUserListHighlightedNameUsesMarqueeOffset(t *testing.T) {
+	currentTheme = Monokai
+	rehashStyles()
+
+	model := m{
+		mode:                 "nav",
+		sidebarFocused:       true,
+		sel:                  0,
+		sidebarMarqueeOffset: 4,
+		whitelist:            map[string]string{"15551230001": "Very Long Highlighted Contact Name"},
+		contacts: map[string]contact{
+			"15551230001@s.whatsapp.net": {ID: "15551230001@s.whatsapp.net", Notify: "Very Long Highlighted Contact Name"},
+		},
+		contactsByNumber: map[string]contact{
+			"15551230001": {ID: "15551230001@s.whatsapp.net", Notify: "Very Long Highlighted Contact Name"},
+		},
+	}
+	items := []chat{{ID: "15551230001@s.whatsapp.net"}}
+
+	lines := model.renderUserList(items, 0, 1, 30)
+	if len(lines) == 0 {
+		t.Fatal("renderUserList returned no lines")
+	}
+	if !strings.Contains(lines[0], "Long Highl") {
+		t.Fatalf("highlighted row did not render marquee window: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "1. Very Long Highlighted") {
+		t.Fatalf("highlighted row ignored marquee offset: %q", lines[0])
+	}
+}
+
+func TestSidebarHighlightInsetAnimatesToOne(t *testing.T) {
+	model := m{
+		mode:           "nav",
+		sidebarFocused: true,
+		sidebarTab:     "chats",
+		sel:            0,
+		chats:          []chat{{ID: "15551230001@s.whatsapp.net", ConversationTimestamp: 1710000000}},
+	}
+
+	model.syncSidebarHighlight()
+	if model.sidebarHighlightInset != 0 {
+		t.Fatalf("initial sidebarHighlightInset = %d, want 0", model.sidebarHighlightInset)
+	}
+
+	model.advanceSidebarHighlight()
+	if model.sidebarHighlightInset != 1 {
+		t.Fatalf("animated sidebarHighlightInset = %d, want 1", model.sidebarHighlightInset)
+	}
+}
+
+func TestChatEnterAppendsOptimisticOutgoingMessageImmediately(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+		input:     "hello now",
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(m)
+
+	msgs := got.msgs[got.active]
+	if len(msgs) != 1 {
+		t.Fatalf("optimistic send appended %d messages, want 1", len(msgs))
+	}
+	if !msgs[0].Key.FromMe {
+		t.Fatalf("optimistic message should be from me: %+v", msgs[0].Key)
+	}
+	if !strings.HasPrefix(msgs[0].Key.ID, "local-") {
+		t.Fatalf("optimistic message id = %q, want local-*", msgs[0].Key.ID)
+	}
+	if body, _ := msgs[0].Message["conversation"].(string); body != "hello now" {
+		t.Fatalf("optimistic message body = %q, want %q", body, "hello now")
+	}
+}

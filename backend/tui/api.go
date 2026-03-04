@@ -274,7 +274,7 @@ func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
 		return msgsMsg{chatID: chatID, msgs: out.Messages}
 	}
 }
-func send(c *http.Client, base, chatID, text string, replyTo *wireMsg) tea.Cmd {
+func send(c *http.Client, base, chatID, text string, replyTo *wireMsg, pendingID string) tea.Cmd {
 	return func() tea.Msg {
 		payload := map[string]any{"chatId": chatID, "text": text}
 		if replyTo != nil {
@@ -295,24 +295,24 @@ func send(c *http.Client, base, chatID, text string, replyTo *wireMsg) tea.Cmd {
 		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
-			return sentMsg{chatID: chatID, err: err}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: err}
 		}
 		defer res.Body.Close()
 		if res.StatusCode/100 != 2 {
 			raw, _ := io.ReadAll(res.Body)
-			return sentMsg{chatID: chatID, err: fmt.Errorf("%s %s", res.Status, strings.TrimSpace(string(raw)))}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: fmt.Errorf("%s %s", res.Status, strings.TrimSpace(string(raw)))}
 		}
 		var out struct {
 			Message wireMsg `json:"message"`
 		}
 		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-			return sentMsg{chatID: chatID, err: err}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: err}
 		}
-		return sentMsg{chatID: chatID, msg: out.Message}
+		return sentMsg{chatID: chatID, pendingID: pendingID, msg: out.Message}
 	}
 }
 
-func sendFile(c *http.Client, base, chatID, kind, path, caption string) tea.Cmd {
+func sendFile(c *http.Client, base, chatID, kind, path, caption string, pendingID string) tea.Cmd {
 	return func() tea.Msg {
 		payload := map[string]any{
 			"chatId":  chatID,
@@ -326,20 +326,20 @@ func sendFile(c *http.Client, base, chatID, kind, path, caption string) tea.Cmd 
 		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
-			return sentMsg{chatID: chatID, err: err}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: err}
 		}
 		defer res.Body.Close()
 		if res.StatusCode/100 != 2 {
 			raw, _ := io.ReadAll(res.Body)
-			return sentMsg{chatID: chatID, err: fmt.Errorf("%s %s", res.Status, strings.TrimSpace(string(raw)))}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: fmt.Errorf("%s %s", res.Status, strings.TrimSpace(string(raw)))}
 		}
 		var out struct {
 			Message wireMsg `json:"message"`
 		}
 		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-			return sentMsg{chatID: chatID, err: err}
+			return sentMsg{chatID: chatID, pendingID: pendingID, err: err}
 		}
-		return sentMsg{chatID: chatID, msg: out.Message}
+		return sentMsg{chatID: chatID, pendingID: pendingID, msg: out.Message}
 	}
 }
 func (x m) cleanup() {
