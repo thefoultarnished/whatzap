@@ -735,9 +735,6 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.inputFlushScheduled = false
 			txt := strings.TrimSpace(x.input)
 			x.input = ""
-			if atIdx := atReplyPrefixEnd(txt); atIdx > 0 {
-				txt = strings.TrimSpace(txt[atIdx:])
-			}
 			txt = strings.TrimSpace(sanitizeOutgoingText(txt))
 			if !hasVisibleText(txt) || x.active == "" {
 				return x, nil
@@ -791,28 +788,11 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return x, x.setTopBar("No received messages to reply to")
 			}
 			if len(k.Runes) > 0 {
-				ch := k.Runes[0]
 				if x.inputAllSelected {
 					x.input = string(k.Runes)
 					x.inputBuf = ""
 					x.inputFlushScheduled = false
 					x.inputAllSelected = false
-				} else if ch == ' ' && strings.HasPrefix(x.input, "@") {
-					if label, _, ok := parseAtReplyToken(x.input); ok {
-						sidePad := max(2, x.w/20)
-						contentW := x.w - sidePad*2
-						leftW := min(28, max(24, contentW/3))
-						rightW := contentW - leftW
-						msgH := x.h - 6
-						if msg := x.atReplyMsg(rightW, msgH, label); msg != nil {
-							x.replyTo = msg
-							x.input = ""
-							return x, nil
-						}
-					}
-					x.input += " "
-				} else if strings.HasPrefix(x.input, "@") {
-					x.input += string(k.Runes)
 				} else {
 					x.inputBuf += string(k.Runes)
 					if !x.inputFlushScheduled {

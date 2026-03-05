@@ -46,6 +46,31 @@ func TestRenderChatInputShowsBlacklistedPlaceholder(t *testing.T) {
 	}
 }
 
+func TestRenderChatInputFocusedTypableShowsBlinkingCursorState(t *testing.T) {
+	currentTheme = TokyoNight
+	rehashStyles()
+
+	base := m{
+		mode:          "chat",
+		active:        "15551230001@s.whatsapp.net",
+		whitelist:     map[string]string{"15551230001": "Allowed"},
+		sidebarFocused: false,
+		leftInputFocused: false,
+	}
+
+	onModel := base
+	onModel.cursorOn = true
+	offModel := base
+	offModel.cursorOn = false
+
+	renderedOn := onModel.renderChatInput(48, "")
+	renderedOff := offModel.renderChatInput(48, "")
+
+	if renderedOn == renderedOff {
+		t.Fatalf("expected locked focused input to render different blink states")
+	}
+}
+
 func TestNameFallsBackToIndexedContactByNumber(t *testing.T) {
 	model := m{
 		contacts: map[string]contact{

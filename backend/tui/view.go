@@ -95,10 +95,6 @@ func (x m) View() string {
 	if x.replyTo != nil {
 		replyToID = x.replyTo.Key.ID
 	}
-	atInput := ""
-	if strings.HasPrefix(x.input, "@") {
-		atInput = x.input
-	}
 	cacheKey := mainCacheKey{
 		active:       x.active,
 		themeName:    currentConfig.ThemeName,
@@ -107,7 +103,7 @@ func (x m) View() string {
 		scroll:       x.scroll,
 		w:            x.w,
 		h:            x.h,
-		atInput:      atInput,
+		atInput:      "",
 		replyToID:    replyToID,
 		selectedMsg:  x.selectedMsgID,
 		contactCount: len(x.contacts) + len(x.names),
@@ -131,7 +127,7 @@ func (x m) View() string {
 	splitInputBar := lipgloss.JoinHorizontal(lipgloss.Top, x.renderCommandBox(leftW), x.renderChatInput(rightW, typedInput))
 
 	bodyParts := []string{center}
-	if replyBar := x.renderReplyBar(contentW, rightW, outerH-4, typedInput); replyBar != "" {
+	if replyBar := x.renderReplyBar(contentW, rightW); replyBar != "" {
 		bodyParts = append(bodyParts, replyBar)
 	}
 	bodyParts = append(bodyParts, splitInputBar)
@@ -269,12 +265,12 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	textAreaW := max(1, rightW-1-sendBadgeW)
 	var inputDisplay string
 	if inputLocked {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  blacklisted | Ctrl+K then /whitelist")
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
 	} else if x.inputAllSelected {
-		inputDisplay = lipgloss.NewStyle().Foreground(text).Render("") +
+		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" ") +
 			lipgloss.NewStyle().Foreground(buttonInk).Background(accent).Render(typedInput)
 	} else {
-		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(typedInput)
+		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" " + typedInput)
 		if rightFocused && inputGhost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(inputGhost)
 			if x.cursorOn {
@@ -284,7 +280,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 			}
 			inputDisplay += ghostStyle.Render(restGhost)
 		} else if rightFocused && x.cursorOn {
-			inputDisplay += lipgloss.NewStyle().Foreground(accent).Render("|")
+			inputDisplay += lipgloss.NewStyle().Foreground(accent).Bold(true).Render("█")
 		} else if rightFocused {
 			inputDisplay += " "
 		}
@@ -294,11 +290,17 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		inputDisplay += lipgloss.NewStyle().Foreground(accent).Bold(true).Render("  CMD")
 	}
 	if x.mode == "nav" || (x.mode == "chat" && x.sidebarFocused) {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Ctrl+K for commands | Tab to focus")
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Ctrl+K for commands | Tab to focus")
 	} else if inputLocked {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  blacklisted | Ctrl+K then /whitelist")
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E for emoji")
+		if x.cursorOn {
+			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
+				lipgloss.NewStyle().Foreground(accent).Bold(true).Render("█") +
+				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E for emoji")
+		} else {
+			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E for emoji")
+		}
 	}
 
 	rightContent := lipgloss.NewStyle().Width(textAreaW).Render(inputDisplay) + sendBadge
@@ -317,20 +319,9 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		Render(rightContent)
 }
 
-func (x m) renderReplyBar(contentW, rightW, mainH int, typedInput string) string {
-	var displayReplyTo *wireMsg
+func (x m) renderReplyBar(contentW, rightW int) string {
+	displayReplyTo := x.replyTo
 	atCancelHint := "  | Esc to cancel"
-	if strings.HasPrefix(typedInput, "@") {
-		if label, _, ok := parseAtReplyToken(typedInput); ok {
-			if msg := x.atReplyMsg(rightW, mainH, label); msg != nil {
-				displayReplyTo = msg
-				atCancelHint = "  | Space to confirm, Esc to cancel"
-			}
-		}
-	}
-	if displayReplyTo == nil {
-		displayReplyTo = x.replyTo
-	}
 	if displayReplyTo == nil {
 		return ""
 	}
@@ -544,13 +535,6 @@ func (x m) renderMain(w, h int) string {
 			Render("Select a chat and press Enter")
 	}
 	items := x.msgs[x.active]
-	typedInput := x.input + x.inputBuf
-	previewReplyID := ""
-	if label, _, ok := parseAtReplyToken(typedInput); ok {
-		if msg := x.atReplyMsg(w, h, label); msg != nil {
-			previewReplyID = msg.Key.ID
-		}
-	}
 	type reactionRender struct {
 		emoji string
 		name  string
@@ -633,11 +617,8 @@ func (x m) renderMain(w, h int) string {
 		}
 
 		isClickedSelected := x.selectedMsgID != "" && msg.Key.ID == x.selectedMsgID
-		isReplyPreviewSelected := previewReplyID != "" && msg.Key.ID == previewReplyID
 		selectedBG := lipgloss.Color("")
-		if isReplyPreviewSelected {
-			selectedBG = replyPreviewBg
-		} else if isClickedSelected {
+		if isClickedSelected {
 			selectedBG = messageSelectedBg
 		}
 		applySelectedBG := func(st lipgloss.Style) lipgloss.Style {
@@ -681,6 +662,7 @@ func (x m) renderMain(w, h int) string {
 		}
 
 		quotePlain := ""
+		quoteStyled := ""
 		if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
 			if qText, _ := ext["quotedText"].(string); qText != "" {
 				hasQuoteLine = true
@@ -705,11 +687,10 @@ func (x m) renderMain(w, h int) string {
 					qTextColor = sentText
 				}
 				quotePrefix := "  ╭─ "
-				quoteText := applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
+				quoteStyled = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText)
 				quotePlain = quotePrefix + qSender + ": " + qText
-				block = append(block, quoteText)
 			}
 		}
 		outgoingBlockW := 0
@@ -732,6 +713,13 @@ func (x m) renderMain(w, h int) string {
 			outgoingBlockW = min(outgoingBlockW, max(1, w-2))
 		}
 		indent := outgoingMessageIndent(max(1, w-2), outgoingBlockW, msg.Key.FromMe)
+		if quoteStyled != "" {
+			if msg.Key.FromMe {
+				block = append(block, indent+quoteStyled)
+			} else {
+				block = append(block, quoteStyled)
+			}
+		}
 		lastBodyPlainW := 0
 		for i, ln := range wrapped {
 			bodyStyle := applySelectedBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing))
@@ -845,59 +833,10 @@ func (x m) renderMain(w, h int) string {
 				pinLabel = allDates[i]
 			}
 		}
-		pinnedFirst := false
 		if pinLabel != "" {
 			firstIsSep := start < len(allDates) && allDates[start] == ""
 			if !firstIsSep {
 				lines[0] = dateSeparatorLine(pinLabel, w)
-				pinnedFirst = true
-			}
-		}
-		atMode := strings.HasPrefix(typedInput, "@")
-		if atMode && len(msgBlockMsgs) > 0 {
-			visBlockIdx := allBlockIdx[start:end]
-			visTimeLine := allTimeLine[start:end]
-			blockToLabel := map[int]string{}
-			rCount, sCount, mCount := 0, 0, 0
-			for i, bi := range visBlockIdx {
-				if i == 0 && pinnedFirst {
-					continue
-				}
-				if bi <= 0 {
-					continue
-				}
-				if !visTimeLine[i] {
-					continue
-				}
-				if _, ok := blockToLabel[bi]; ok {
-					continue
-				}
-				msg := msgBlockMsgs[bi-1]
-				switch {
-				case isMediaWire(msg):
-					mCount++
-					blockToLabel[bi] = fmt.Sprintf("M%d", mCount)
-				case msg.Key.FromMe:
-					sCount++
-					blockToLabel[bi] = fmt.Sprintf("S%d", sCount)
-				default:
-					rCount++
-					blockToLabel[bi] = fmt.Sprintf("R%d", rCount)
-				}
-			}
-			for i, bi := range visBlockIdx {
-				if i >= len(lines) {
-					break
-				}
-				if i == 0 && pinnedFirst {
-					continue
-				}
-				if bi > 0 && visTimeLine[i] {
-					if label, ok := blockToLabel[bi]; ok {
-						tag := mutedStyle.Copy().Bold(true).Render("  " + label)
-						lines[i] += tag
-					}
-				}
 			}
 		}
 	}
@@ -1050,157 +989,6 @@ func (x m) msgIDAtLine(lineIdx, w, h int) string {
 		return ""
 	}
 	return visible[lineIdx]
-}
-
-func (x m) atReplyMsg(w, h int, label string) *wireMsg {
-	if x.active == "" || label == "" {
-		return nil
-	}
-	items := x.msgs[x.active]
-	reactionsFor := map[string]int{}
-	for _, msg := range items {
-		if rxn, ok := msg.Message["reactionMessage"].(map[string]any); ok {
-			if tid, _ := rxn["targetMsgID"].(string); tid != "" {
-				reactionsFor[tid]++
-			}
-		}
-	}
-	type entry struct {
-		msg      wireMsg
-		lines    int
-		timeLine int
-	}
-	needed := h + x.scroll
-	entries := []entry{}
-	for i := len(items) - 1; i >= 0; i-- {
-		msg := items[i]
-		if _, ok := msg.Message["reactionMessage"]; ok {
-			continue
-		}
-		mb := renderMessageBody(msg.Message)
-		if mb == "" {
-			mb = "[media]"
-		}
-		availableW := chatMessageWrapWidth(w, mb)
-		senderName := "Me"
-		if !msg.Key.FromMe {
-			senderName = truncate(x.senderNameForMsg(msg), 12)
-		}
-		wrapped := wrapMessageLines(mb, availableW, msg.Key.FromMe, senderName)
-		hasQuote := false
-		if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
-			if qt, _ := ext["quotedText"].(string); qt != "" {
-				hasQuote = true
-			}
-		}
-		lineCount := len(wrapped)
-		if hasQuote {
-			lineCount++
-		}
-		if reactionsFor[msg.Key.ID] > 0 {
-			lineCount++
-		}
-		timeLine := len(wrapped)
-		if hasQuote {
-			timeLine++
-		}
-		entries = append(entries, entry{msg, lineCount, timeLine})
-		total := 0
-		for _, e := range entries {
-			total += e.lines
-		}
-		if total >= needed {
-			break
-		}
-	}
-	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
-		entries[i], entries[j] = entries[j], entries[i]
-	}
-	allBlockIdx := []int{}
-	allDates := []string{}
-	allTimeLine := []bool{}
-	lastDay := ""
-	for i, e := range entries {
-		dayLabel := dateSeparatorLabel(e.msg.MessageTimestamp)
-		if dayLabel != lastDay {
-			lastDay = dayLabel
-			allBlockIdx = append(allBlockIdx, 0)
-			allDates = append(allDates, "")
-			allTimeLine = append(allTimeLine, false)
-		}
-		for k := 0; k < e.lines; k++ {
-			allBlockIdx = append(allBlockIdx, i+1)
-			allDates = append(allDates, dayLabel)
-			allTimeLine = append(allTimeLine, k == e.timeLine)
-		}
-	}
-	if len(allBlockIdx) == 0 {
-		return nil
-	}
-	start := len(allBlockIdx) - h - x.scroll
-	if start < 0 {
-		start = 0
-	}
-	end := start + h
-	if end > len(allBlockIdx) {
-		end = len(allBlockIdx)
-	}
-	visBlockIdx := allBlockIdx[start:end]
-	visTimeLine := allTimeLine[start:end]
-	pinnedFirst := false
-	if len(visBlockIdx) > 0 && start < len(allDates) {
-		pinLabel := ""
-		for i := start; i >= 0 && pinLabel == ""; i-- {
-			if allDates[i] != "" {
-				pinLabel = allDates[i]
-			}
-		}
-		if pinLabel != "" {
-			firstIsSep := allDates[start] == ""
-			if !firstIsSep {
-				pinnedFirst = true
-			}
-		}
-	}
-	label = strings.ToUpper(strings.TrimSpace(label))
-	seen := map[int]bool{}
-	order := []int{}
-	for i, bi := range visBlockIdx {
-		if i == 0 && pinnedFirst {
-			continue
-		}
-		if bi <= 0 {
-			continue
-		}
-		if !visTimeLine[i] {
-			continue
-		}
-		if !seen[bi] {
-			seen[bi] = true
-			order = append(order, bi)
-		}
-	}
-	mCount, sCount, rCount := 0, 0, 0
-	for _, bi := range order {
-		msg := entries[bi-1].msg
-		var curr string
-		switch {
-		case isMediaWire(msg):
-			mCount++
-			curr = fmt.Sprintf("M%d", mCount)
-		case msg.Key.FromMe:
-			sCount++
-			curr = fmt.Sprintf("S%d", sCount)
-		default:
-			rCount++
-			curr = fmt.Sprintf("R%d", rCount)
-		}
-		if curr == label {
-			cp := msg
-			return &cp
-		}
-	}
-	return nil
 }
 
 func (x *m) setTopBar(msg string) tea.Cmd {

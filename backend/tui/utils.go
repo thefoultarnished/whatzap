@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -961,41 +960,6 @@ func detectMediaSendKind(path string) (string, error) {
 		return "video", nil
 	}
 	return "document", nil
-}
-
-func parseAtReplyToken(s string) (string, int, bool) {
-	if !strings.HasPrefix(s, "@") || len(s) < 3 {
-		return "", 0, false
-	}
-	cat := unicode.ToUpper(rune(s[1]))
-	if cat != 'R' && cat != 'S' && cat != 'M' {
-		return "", 0, false
-	}
-	i := 2
-	startDigits := i
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		i++
-	}
-	if i == startDigits {
-		return "", 0, false
-	}
-	n, err := strconv.Atoi(s[startDigits:i])
-	if err != nil || n < 1 {
-		return "", 0, false
-	}
-	end := i
-	if i < len(s) && s[i] == ' ' {
-		end = i + 1
-	}
-	return fmt.Sprintf("%c%d", cat, n), end, true
-}
-
-func atReplyPrefixEnd(s string) int {
-	_, end, ok := parseAtReplyToken(s)
-	if !ok {
-		return 0
-	}
-	return end
 }
 
 func dateSeparatorLine(label string, w int) string {
