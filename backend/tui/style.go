@@ -60,7 +60,7 @@ var (
 	shortcutActive, sidebarActiveBg, sidebarActiveUnreadBg             lipgloss.Color
 	replyPreviewBg, messageSelectedBg, mediaTokenBg, mediaTokenPulseBg lipgloss.Color
 
-	spinnerFrames  = []string{"-", "\\", "|", "/"}
+	spinnerFrames  = []string{"✶", "✸", "✹", "✺", "✹", "✷"}
 	systemCommands = []string{
 		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
 		"/theme", "/theme1tokyonight", "/theme2catppuccin", "/theme3monokai", "/theme4charcoal", "/theme5aurora", "/theme6sakura", "/theme7abyssal",

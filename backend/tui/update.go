@@ -399,6 +399,49 @@ func (x m) chatInputLocked() bool {
 	return x.active != "" && !x.activeChatWhitelisted()
 }
 
+func (x m) replyPickCandidates() []wireMsg {
+	msgs := x.msgs[x.active]
+	out := make([]wireMsg, 0, len(msgs))
+	for _, m := range msgs {
+		if _, ok := m.Message["reactionMessage"]; ok {
+			continue
+		}
+		if pm, ok := m.Message["protocolMessage"]; ok {
+			if pmm, ok := pm.(map[string]any); ok {
+				if t, _ := pmm["type"].(string); t == "REVOKE" || t == "MESSAGE_EDIT" {
+					continue
+				}
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func msgRowHeight(msg wireMsg, w int) int {
+	rows := 0
+	// quote line
+	if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
+		if qt, _ := ext["quotedText"].(string); qt != "" {
+			rows++
+		}
+	}
+	// body lines
+	body := renderMessageBody(msg.Message)
+	wrapW := max(10, w-10)
+	if body == "" {
+		rows++
+	} else {
+		lines := strings.Split(wrapText(body, wrapW), "\n")
+		rows += len(lines)
+	}
+	// reaction line
+	if _, ok := msg.Message["reactionMessage"]; ok {
+		rows++
+	}
+	return max(1, rows)
+}
+
 func optimisticOutgoingMessage(chatID, text, pendingID string, replyTo *wireMsg) wireMsg {
 	msg := wireMsg{
 		MessageTimestamp: time.Now().Unix(),
@@ -436,6 +479,8 @@ func (x *m) clearChatComposer() {
 	x.inputFlushScheduled = false
 	x.inputAllSelected = false
 	x.replyTo = nil
+	x.replyPickMode = false
+	x.replyPickIndex = 0
 	x.selectedMsgID = ""
 	x.closeEmojiPicker()
 }
@@ -445,6 +490,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return x, tea.Quit
 	case "alt+c":
+		x.replyPickMode = false
+		x.selectedMsgID = ""
+		x.scroll = 0
 		x.sidebarTab = "chats"
 		x.sidebarFocused = true
 		if x.mode == "chat" {
@@ -452,9 +500,13 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		x.sel = 0
 		x.sideScroll = 0
+		x.mainCache.result = ""
 		x.ensureSideVisible(x.sideViewRows())
 		return x, nil
 	case "alt+p":
+		x.replyPickMode = false
+		x.selectedMsgID = ""
+		x.scroll = 0
 		x.sidebarTab = "contacts"
 		x.sidebarFocused = true
 		if x.mode == "chat" {
@@ -462,6 +514,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		x.sel = 0
 		x.sideScroll = 0
+		x.mainCache.result = ""
 		x.ensureSideVisible(x.sideViewRows())
 		return x, nil
 	case "alt+s":
@@ -521,6 +574,40 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "alt+e":
 		if x.status == "ready" && x.mode == "chat" && x.active != "" && !x.chatInputLocked() {
 			x.openEmojiPicker()
+		}
+		return x, nil
+	case "alt+r":
+		if x.status == "ready" && x.mode == "chat" && x.active != "" && !x.chatInputLocked() {
+			if x.replyPickMode {
+				x.replyPickMode = false
+				x.selectedMsgID = ""
+				return x, nil
+			}
+			cands := x.replyPickCandidates()
+			if len(cands) == 0 {
+				return x, x.setTopBar("No messages to reply to")
+			}
+			x.replyPickMode = true
+			// find the last visible candidate based on current scroll
+			if x.scroll == 0 {
+				x.replyPickIndex = len(cands) - 1
+			} else {
+				// count rows from bottom to find which message is at the bottom of the visible area
+				paneW := max(10, x.w-30)
+				rowsFromBottom := 0
+				picked := len(cands) - 1
+				for i := len(cands) - 1; i >= 0; i-- {
+					rowsFromBottom += msgRowHeight(cands[i], paneW)
+					if rowsFromBottom > x.scroll {
+						picked = i
+						break
+					}
+				}
+				x.replyPickIndex = picked
+			}
+			x.selectedMsgID = cands[x.replyPickIndex].Key.ID
+			x.mainCache.result = ""
+			return x, nil
 		}
 		return x, nil
 	}
@@ -614,6 +701,64 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "chat":
 		inputLocked := x.chatInputLocked()
+		if x.replyPickMode {
+			cands := x.replyPickCandidates()
+			paneW := max(10, x.w-30)
+			threshold := 6
+			switch k.Type {
+			case tea.KeyUp:
+				if x.replyPickIndex > 0 {
+					x.replyPickIndex--
+					stepsFromBottom := len(cands) - 1 - x.replyPickIndex
+					if stepsFromBottom > threshold {
+						rows := msgRowHeight(cands[x.replyPickIndex], paneW)
+						x.scroll += rows
+					}
+				}
+				x.selectedMsgID = cands[x.replyPickIndex].Key.ID
+				x.mainCache.result = ""
+				return x, nil
+			case tea.KeyDown:
+				if x.replyPickIndex < len(cands)-1 {
+					rows := msgRowHeight(cands[x.replyPickIndex], paneW)
+					x.replyPickIndex++
+					if x.scroll > 0 {
+						x.scroll -= rows
+						if x.scroll < 0 {
+							x.scroll = 0
+						}
+					}
+				}
+				x.selectedMsgID = cands[x.replyPickIndex].Key.ID
+				x.mainCache.result = ""
+				return x, nil
+			case tea.KeyEnter:
+				cp := cands[x.replyPickIndex]
+				x.replyTo = &cp
+				x.replyPickMode = false
+				x.selectedMsgID = ""
+				x.scroll = 0
+				x.mainCache.result = ""
+				return x, nil
+			case tea.KeyEsc, tea.KeyTab:
+				x.replyPickMode = false
+				x.selectedMsgID = ""
+				x.scroll = 0
+				x.mainCache.result = ""
+				return x, nil
+			default:
+				if k.String() == "r" {
+					cp := cands[x.replyPickIndex]
+					x.replyTo = &cp
+					x.replyPickMode = false
+					x.selectedMsgID = ""
+					x.scroll = 0
+					x.mainCache.result = ""
+					return x, nil
+				}
+				return x, nil
+			}
+		}
 		if k.Alt && (k.Type == tea.KeyUp || k.Type == tea.KeyDown) {
 			f := x.filtered()
 			if len(f) == 0 {

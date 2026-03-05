@@ -30,7 +30,7 @@ func (x m) View() string {
 		if x.status == "qr" {
 			if x.qrRaw != "" {
 				hint = accentStyle.Copy().Bold(false).Render("WhatsApp > Linked Devices > Link a Device")
-				waiting := logoStyle.Render("[" + spinnerFrames[x.spinnerFrame] + " waiting for scan ]")
+				waiting := logoStyle.Render(spinnerFrames[x.spinnerFrame] + " waiting for scan")
 				qrMaxW := min(max(12, innerW-6), 56)
 				qrMaxH := min(max(8, innerH-6), 28)
 				qrBody := renderQR(x.qrRaw, qrMaxW, qrMaxH)
@@ -60,7 +60,7 @@ func (x m) View() string {
 			statusBody = accentStyle.Copy().Bold(false).Render(x.status)
 			hint = mutedStyle.Render("Restart and scan a QR code to sign in again")
 		} else {
-			statusBody = accentStyle.Copy().Bold(false).Render("[" + spinnerFrames[x.spinnerFrame] + "] " + statusBody)
+			statusBody = accentStyle.Copy().Bold(false).Render(spinnerFrames[x.spinnerFrame] + " " + statusBody)
 		}
 		msg := statusMsgTemplate(statusBody)
 		content := lipgloss.Place(innerW, innerH, lipgloss.Center, lipgloss.Center, msg)
@@ -77,7 +77,11 @@ func (x m) View() string {
 	leftW := min(28, max(24, contentW/3))
 	rightW := contentW - leftW
 	head := x.renderHeaderContainer(contentW, leftW)
-	side := x.renderSide(leftW, outerH-4)
+	replyBarH := 0
+	if x.replyTo != nil {
+		replyBarH = 1
+	}
+	side := x.renderSide(leftW, outerH-4-replyBarH)
 
 	hasFlash := false
 	now := time.Now()
@@ -108,14 +112,15 @@ func (x m) View() string {
 		selectedMsg:  x.selectedMsgID,
 		contactCount: len(x.contacts) + len(x.names),
 		identityVer:  x.identityVersion,
+		spinnerFrame: x.spinnerFrame,
 	}
 	var main string
 	if x.emojiPickerOpen {
-		main = x.renderEmojiPickerPane(rightW, outerH-4)
+		main = x.renderEmojiPickerPane(rightW, outerH-4-replyBarH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
 		main = x.mainCache.result
 	} else {
-		main = x.renderMain(rightW, outerH-4)
+		main = x.renderMain(rightW, outerH-4-replyBarH)
 		if !hasFlash {
 			x.mainCache.key = cacheKey
 			x.mainCache.result = main
@@ -289,7 +294,18 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	if isCmd {
 		inputDisplay += lipgloss.NewStyle().Foreground(accent).Bold(true).Render("  CMD")
 	}
-	if x.mode == "nav" || (x.mode == "chat" && x.sidebarFocused) {
+	if x.replyPickMode {
+		inputDisplay = lipgloss.NewStyle().Foreground(accent).Bold(true).Render(" R") +
+			lipgloss.NewStyle().Foreground(text).Render("/") +
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Enter") +
+			lipgloss.NewStyle().Foreground(text).Render(" quote reply  ") +
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Esc") +
+			lipgloss.NewStyle().Foreground(text).Render("/") +
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Alt") +
+			lipgloss.NewStyle().Foreground(text).Render(" cancel")
+	} else if x.mode == "nav" && x.active == "" {
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Press Enter to start chatting")
+	} else if x.mode == "nav" || (x.mode == "chat" && x.sidebarFocused) {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Ctrl+K for commands | Tab to focus")
 	} else if inputLocked {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
@@ -321,15 +337,19 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 
 func (x m) renderReplyBar(contentW, rightW int) string {
 	displayReplyTo := x.replyTo
-	atCancelHint := "  | Esc to cancel"
 	if displayReplyTo == nil {
 		return ""
 	}
+	leftW := contentW - rightW
 
 	rSender := x.senderNameForMsg(*displayReplyTo)
 	rText := renderMessageBody(displayReplyTo.Message)
-	if len([]rune(rText)) > 60 {
-		rText = string([]rune(rText)[:60]) + "..."
+	maxText := rightW - 20
+	if maxText < 20 {
+		maxText = 20
+	}
+	if len([]rune(rText)) > maxText {
+		rText = string([]rune(rText)[:maxText]) + "..."
 	}
 	quoteTextColor := quotedReceivedText
 	nameColor := receivedName
@@ -337,13 +357,11 @@ func (x m) renderReplyBar(contentW, rightW int) string {
 		quoteTextColor = quotedSentText
 		nameColor = sentName
 	}
-	return lipgloss.NewStyle().
-		Width(contentW).
-		Foreground(muted).
-		Render(lipgloss.NewStyle().Foreground(accent).Render("  -> ") +
-			lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(rSender+": ") +
-			lipgloss.NewStyle().Foreground(quoteTextColor).Render(rText) +
-			lipgloss.NewStyle().Foreground(muted).Render(atCancelHint))
+	bar := lipgloss.NewStyle().Foreground(accent).Render(" ╭─ ") +
+		lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(rSender+": ") +
+		lipgloss.NewStyle().Foreground(quoteTextColor).Render(rText) +
+		lipgloss.NewStyle().Foreground(muted).Render("  Esc cancel")
+	return strings.Repeat(" ", leftW) + lipgloss.NewStyle().Width(rightW).Render(bar)
 }
 
 func (x m) renderSide(w, h int) string {
@@ -525,14 +543,83 @@ func outgoingMessageIndent(paneW int, blockW int, fromMe bool) string {
 	return strings.Repeat(" ", max(0, paneW-blockW))
 }
 
+func (x m) renderWelcomePane(w, h int) string {
+	keyStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(text)
+	secStyle := lipgloss.NewStyle().Foreground(purple).Bold(true)
+	divColor := lipgloss.NewStyle().Foreground(muted)
+
+	// content column width
+	col := 38
+	if col > w-4 {
+		col = w - 4
+	}
+	if col < 20 {
+		col = 20
+	}
+
+	// header centered
+	star := lipgloss.NewStyle().Foreground(brand).Bold(true).Render(spinnerFrames[x.spinnerFrame])
+	title := lipgloss.NewStyle().Foreground(text).Bold(true).Render("WhatZap")
+	tagline := mutedStyle.Render("Terminal WhatsApp client")
+	header := lipgloss.JoinVertical(lipgloss.Center, star, title, tagline)
+	header = lipgloss.PlaceHorizontal(col, lipgloss.Center, header)
+
+	div := divColor.Render(strings.Repeat("─", col))
+
+	kw := 15
+	shortcut := func(key, desc string) string {
+		rk := keyStyle.Render(key)
+		pad := kw - len([]rune(key))
+		if pad < 1 {
+			pad = 1
+		}
+		return rk + strings.Repeat(" ", pad) + descStyle.Render(desc)
+	}
+
+	section := func(title string, items []string) string {
+		h := secStyle.Render("  " + title)
+		return h + "\n" + strings.Join(items, "\n")
+	}
+
+	nav := section("Navigation", []string{
+		shortcut("↑ / ↓", "Browse chats"),
+		shortcut("Enter", "Open chat"),
+		shortcut("Esc", "Close / go back"),
+		shortcut("Tab", "Toggle sidebar"),
+	})
+
+	chat := section("In Chat", []string{
+		shortcut("Alt+↑ / ↓", "Switch chats"),
+		shortcut("↑ / ↓", "Scroll messages"),
+		shortcut("Alt+R", "Pick msg to reply"),
+		shortcut("Alt+E", "Emoji picker"),
+		shortcut("Tab / Esc", "Exit chat"),
+	})
+
+	quick := section("Quick Actions", []string{
+		shortcut("Alt+S", "Search"),
+		shortcut("Alt+C", "Chats tab"),
+		shortcut("Alt+P", "Contacts tab"),
+		shortcut("Ctrl+K", "Command palette"),
+		shortcut("Alt+M", "Toggle mouse"),
+	})
+
+	hint := lipgloss.PlaceHorizontal(col, lipgloss.Center,
+		mutedStyle.Render("Select a chat to start messaging"))
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		"", header, "", div, "",
+		nav, "", chat, "", quick,
+		"", div, hint,
+	)
+
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, body)
+}
+
 func (x m) renderMain(w, h int) string {
 	if x.active == "" {
-		return lipgloss.NewStyle().
-			Width(w).
-			Height(h).
-			Padding(1, 2).
-			Foreground(muted).
-			Render("Select a chat and press Enter")
+		return x.renderWelcomePane(w, h)
 	}
 	items := x.msgs[x.active]
 	type reactionRender struct {
@@ -618,8 +705,14 @@ func (x m) renderMain(w, h int) string {
 
 		isClickedSelected := x.selectedMsgID != "" && msg.Key.ID == x.selectedMsgID
 		selectedBG := lipgloss.Color("")
-		if isClickedSelected {
+		if isClickedSelected && !x.replyPickMode {
 			selectedBG = messageSelectedBg
+		}
+		bodyBG := lipgloss.Color("")
+		if isClickedSelected && x.replyPickMode {
+			bodyBG = accent
+		} else if isClickedSelected {
+			bodyBG = messageSelectedBg
 		}
 		applySelectedBG := func(st lipgloss.Style) lipgloss.Style {
 			if selectedBG != "" {
@@ -627,13 +720,20 @@ func (x m) renderMain(w, h int) string {
 			}
 			return st
 		}
-		timeStyled := applySelectedBG(mutedStyle.Copy().Foreground(timeColor)).Render("  " + timeStr)
+		applyBodyBG := func(st lipgloss.Style) lipgloss.Style {
+			if bodyBG != "" {
+				return st.Background(bodyBG)
+			}
+			return st
+		}
+
+		timeStyled := applyBodyBG(mutedStyle.Copy().Foreground(timeColor)).Render("  " + timeStr)
 		if receiptText != "" {
 			receiptColor := muted
 			if msg.ReceiptStatus == "read" || msg.ReceiptStatus == "played" {
 				receiptColor = accent
 			}
-			timeStyled += applySelectedBG(mutedStyle.Copy().Foreground(receiptColor).Bold(true)).Render(receiptText)
+			timeStyled += applyBodyBG(mutedStyle.Copy().Foreground(receiptColor).Bold(true)).Render(receiptText)
 		}
 		block := []string{}
 		hasQuoteLine := false
@@ -679,10 +779,9 @@ func (x m) renderMain(w, h int) string {
 				if len([]rune(qText)) > 50 {
 					qText = string([]rune(qText)[:50]) + "..."
 				}
-				qIsMe := qFromMe
 				qSenderColor := receivedName
 				qTextColor := receivedText
-				if qIsMe {
+				if qFromMe {
 					qSenderColor = sentName
 					qTextColor = sentText
 				}
@@ -695,9 +794,6 @@ func (x m) renderMain(w, h int) string {
 		}
 		outgoingBlockW := 0
 		if msg.Key.FromMe {
-			if quotePlain != "" {
-				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(quotePlain))
-			}
 			for i, ln := range wrapped {
 				lineMeasure := ln
 				if i == len(wrapped)-1 {
@@ -706,6 +802,9 @@ func (x m) renderMain(w, h int) string {
 					lineMeasure += " "
 				}
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(lineMeasure))
+			}
+			if quotePlain != "" {
+				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(quotePlain))
 			}
 			if reactionLinePlain != "" {
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(reactionLinePlain))
@@ -722,14 +821,14 @@ func (x m) renderMain(w, h int) string {
 		}
 		lastBodyPlainW := 0
 		for i, ln := range wrapped {
-			bodyStyle := applySelectedBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing))
-			tokenStyle := applySelectedBG(lipgloss.NewStyle().
+			bodyStyle := applyBodyBG(lipgloss.NewStyle().Foreground(bodyColor).Bold(isFlashing))
+			tokenStyle := applyBodyBG(lipgloss.NewStyle().
 				Foreground(tagInk).
 				Background(mediaTokenBG).
 				Bold(true))
 			lineParts := []string{}
 			if !msg.Key.FromMe && i == 0 {
-				lineParts = append(lineParts, applySelectedBG(lipgloss.NewStyle().
+				lineParts = append(lineParts, applyBodyBG(lipgloss.NewStyle().
 					Foreground(receivedName).
 					Bold(true)).
 					Render(senderName+": "))
@@ -741,19 +840,19 @@ func (x m) renderMain(w, h int) string {
 			if msg.Key.FromMe {
 				lineParts = append(lineParts, bodyStyle.Render(" "))
 			}
-			bodyStyled := strings.Join(lineParts, "")
+			bodyContent := strings.Join(lineParts, "")
 			if msg.Key.FromMe {
 				if isMediaMsg {
-					bodyStyled = lipgloss.NewStyle().Width(max(1, w-2)).Align(lipgloss.Right).Render(bodyStyled)
+					bodyContent = lipgloss.NewStyle().Width(max(1, w-2)).Align(lipgloss.Right).Render(bodyContent)
 				} else {
-					bodyStyled = indent + bodyStyled
+					bodyContent = indent + bodyContent
 				}
 			}
 			lastBodyPlainW = runeDisplayWidth(ln)
 			if !msg.Key.FromMe && i == 0 {
 				lastBodyPlainW += runeDisplayWidth(senderName + ": ")
 			}
-			block = append(block, bodyStyled)
+			block = append(block, bodyContent)
 		}
 		if reactionLine != "" {
 			reactionOffset := max(0, lastBodyPlainW-runeDisplayWidth(reactionLinePlain))
@@ -765,7 +864,7 @@ func (x m) renderMain(w, h int) string {
 			block = append(block, reactionLine)
 		}
 
-		if selectedBG != "" {
+		if selectedBG != "" && !x.replyPickMode {
 			hlStyle := lipgloss.NewStyle().Background(selectedBG)
 			for i, ln := range block {
 				block[i] = hlStyle.Render(ln)

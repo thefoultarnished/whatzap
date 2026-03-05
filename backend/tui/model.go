@@ -22,6 +22,7 @@ type mainCacheKey struct {
 	selectedMsg  string
 	contactCount int
 	identityVer  int
+	spinnerFrame int
 }
 type renderCache struct {
 	key    mainCacheKey
@@ -117,7 +118,9 @@ type m struct {
 	whitelist                                map[string]string // phone -> name, allowed=1 only (send gating)
 	names                                    map[string]string // phone -> custom display name (all contacts)
 	replyTo                                  *wireMsg          // message being replied to, nil if none
-	selectedMsgID                            string            // message ID highlighted via mouse click
+	selectedMsgID                            string            // message ID highlighted via mouse click or reply pick
+	replyPickMode                            bool              // Alt+R reply pick mode active
+	replyPickIndex                           int               // index into visible messages during reply pick
 	lastClickY                               int
 	lastClickTime                            time.Time
 	mouseEnabled                             bool
