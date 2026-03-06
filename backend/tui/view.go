@@ -304,9 +304,9 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 			lipgloss.NewStyle().Foreground(accent).Bold(true).Render("Alt") +
 			lipgloss.NewStyle().Foreground(text).Render(" cancel")
 	} else if x.mode == "nav" && x.active == "" {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Press Enter to start chatting")
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Press Enter/Tab to start chatting")
 	} else if x.mode == "nav" || (x.mode == "chat" && x.sidebarFocused) {
-		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Ctrl+K for commands | Tab to focus")
+		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" Press Enter/Tab to start chatting")
 	} else if inputLocked {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
@@ -761,8 +761,9 @@ func (x m) renderMain(w, h int) string {
 			reactionLine = reactionPrefix + strings.Join(reactionStyledParts, applySelectedBG(mutedStyle).Render(", "))
 		}
 
-		quotePlain := ""
 		quoteStyled := ""
+		quoteStyledRight := ""
+		quotePlainRight := ""
 		if ext, ok := msg.Message["extendedTextMessage"].(map[string]any); ok {
 			if qText, _ := ext["quotedText"].(string); qText != "" {
 				hasQuoteLine = true
@@ -786,10 +787,14 @@ func (x m) renderMain(w, h int) string {
 					qTextColor = sentText
 				}
 				quotePrefix := "  ╭─ "
+				quoteSuffix := " ─╮ "
 				quoteStyled = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText)
-				quotePlain = quotePrefix + qSender + ": " + qText
+				quoteStyledRight = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
+					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText) +
+					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quoteSuffix)
+				quotePlainRight = qSender + ": " + qText + quoteSuffix
 			}
 		}
 		outgoingBlockW := 0
@@ -803,9 +808,6 @@ func (x m) renderMain(w, h int) string {
 				}
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(lineMeasure))
 			}
-			if quotePlain != "" {
-				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(quotePlain))
-			}
 			if reactionLinePlain != "" {
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(reactionLinePlain))
 			}
@@ -814,7 +816,10 @@ func (x m) renderMain(w, h int) string {
 		indent := outgoingMessageIndent(max(1, w-2), outgoingBlockW, msg.Key.FromMe)
 		if quoteStyled != "" {
 			if msg.Key.FromMe {
-				block = append(block, indent+quoteStyled)
+				// Right-align quote so ─╮ connector aligns with message block right edge
+				qPlainW := runeDisplayWidth(quotePlainRight)
+				qIndent := max(0, len(indent)+outgoingBlockW-qPlainW)
+				block = append(block, strings.Repeat(" ", qIndent)+quoteStyledRight)
 			} else {
 				block = append(block, quoteStyled)
 			}
