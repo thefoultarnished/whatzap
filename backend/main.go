@@ -98,8 +98,9 @@ type PersistedState struct {
 type App struct {
 	mu sync.RWMutex
 
-	client    *whatsmeow.Client
-	db        *sql.DB
+	client         *whatsmeow.Client
+	db             *sql.DB
+	storeContainer *sqlstore.Container
 	started   bool
 	connected bool
 
@@ -315,6 +316,7 @@ func (a *App) initPersistentResources() error {
 	}
 
 	a.db = rawDB
+	a.storeContainer = container
 	a.client = whatsmeow.NewClient(device, waLog.Stdout("client", "WARN", true))
 	a.bindEvents()
 	return nil
@@ -1584,7 +1586,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		a.client.Disconnect()
-		if a.client.Store != nil {
+		if a.client.Store != nil && a.client.Store.ID != nil {
 			if err := a.client.Store.Delete(context.Background()); err != nil {
 				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("store delete failed: %v", err))
 				return
@@ -1603,13 +1605,20 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Messages: map[string][]WireMessage{},
 	}
 	a.mu.Unlock()
-	if err := a.resetPersistentStorage(); err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("local cleanup failed: %v", err))
-		return
+	// Close all DB connections before deleting files (required on Windows to release file locks).
+	if a.storeContainer != nil {
+		_ = a.storeContainer.Close()
+		a.storeContainer = nil
 	}
-	if err := a.persistStateWithErr(); err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
-		return
+	if a.db != nil {
+		_ = a.db.Close()
+		a.db = nil
+	}
+	if strings.TrimSpace(a.cacheDir) != "" {
+		if err := os.RemoveAll(a.cacheDir); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("local cleanup failed: %v", err))
+			return
+		}
 	}
 	msg := "Logged out successfully"
 	if len(warnings) > 0 {

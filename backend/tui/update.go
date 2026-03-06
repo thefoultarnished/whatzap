@@ -252,7 +252,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.status = v.msg
 		x.err = ""
 		x.mainCache.result = ""
-		return x, x.setTopBar(v.msg)
+		return x, tea.Batch(x.setTopBar(v.msg), tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tea.QuitMsg{} }))
 	case tea.MouseMsg:
 		if v.Action == tea.MouseActionPress && v.Button == tea.MouseButtonLeft && x.mode == "chat" && x.active != "" {
 			sidePad := max(2, x.w/20)

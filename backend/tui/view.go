@@ -10,11 +10,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const successLoadingScreenName = "Success Loading Screen"
+
 func (x m) View() string {
 	if x.w == 0 || x.h == 0 {
 		return "loading..."
 	}
 	frameW := max(1, x.w-2)
+	// Success Loading Screen: shown after login until status becomes "ready".
 	if x.status != "ready" {
 		outerW := frameW
 		outerH := max(3, x.h-2)
@@ -22,10 +25,10 @@ func (x m) View() string {
 		innerH := max(1, outerH-2)
 		statusBody := x.status
 		title := logoStyle.Render("WhatZap")
-		subtitle := mutedStyle.Render("Terminal WhatsApp client")
-		hint := mutedStyle.Render("No browser. Local session.")
-		statusMsgTemplate := func(body string) string {
-			return title + "\n" + subtitle + "\n\n" + body + "\n\n" + hint
+		subtitle := mutedStyle.Render("Private WhatsApp in your terminal")
+		hint := mutedStyle.Render("Keep this window open")
+		statusMsgTemplate := func(body, progress string) string {
+			return title + "\n" + subtitle + "\n\n" + body + "\n" + progress + "\n\n" + hint
 		}
 		if x.status == "qr" {
 			if x.qrRaw != "" {
@@ -60,16 +63,26 @@ func (x m) View() string {
 			statusBody = accentStyle.Copy().Bold(false).Render(x.status)
 			hint = mutedStyle.Render("Restart and scan a QR code to sign in again")
 		} else {
-			statusBody = accentStyle.Copy().Bold(false).Render(spinnerFrames[x.spinnerFrame] + " " + statusBody)
+			statusBody = accentStyle.Copy().Bold(false).Render(spinnerFrames[x.spinnerFrame] + " Connecting your session...")
+			progress := mutedStyle.Render("Syncing chats, contacts, and recent messages")
+			pulse := x.loadingPulse()
+			body := statusMsgTemplate(statusBody, progress+"\n"+pulse)
+			content := lipgloss.Place(innerW, innerH, lipgloss.Center, lipgloss.Center, body)
+			return lipgloss.NewStyle().
+				Width(outerW).
+				Height(outerH).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(brand).
+				Render(content)
 		}
-		msg := statusMsgTemplate(statusBody)
+		msg := statusMsgTemplate(statusBody, "")
 		content := lipgloss.Place(innerW, innerH, lipgloss.Center, lipgloss.Center, msg)
 		return lipgloss.NewStyle().
 			Width(outerW).
 			Height(outerH).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(brand).
-			Render(content)
+		Render(content)
 	}
 	outerW := frameW
 	outerH := x.h - 2
@@ -145,6 +158,16 @@ func (x m) View() string {
 		BorderForeground(muted).
 		Render(inner)
 	return frame
+}
+
+func (x m) loadingPulse() string {
+	steps := []string{
+		"●○○",
+		"○●○",
+		"○○●",
+	}
+	idx := x.spinnerFrame % len(steps)
+	return accentStyle.Copy().Bold(false).Render(steps[idx])
 }
 
 func (x m) renderHeaderContainer(contentW, leftW int) string {
@@ -1109,7 +1132,7 @@ func nextCursorBlink() tea.Cmd {
 	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg { return cursorBlinkMsg{} })
 }
 func nextSpinnerTick() tea.Cmd {
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+	return tea.Tick(170*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
 }
 func clearTopBarAfter(ver int, d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return topBarClearMsg{ver: ver} })
