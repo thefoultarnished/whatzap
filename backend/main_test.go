@@ -167,6 +167,48 @@ func TestUpsertMessageDedupesAndKeepsUnreadStable(t *testing.T) {
 }
 
 // Logout success.
+func TestUpsertMessageSkipsPersistDuringHistorySync(t *testing.T) {
+	app := newTestApp(t)
+	app.historySyncing = true
+
+	msg := WireMessage{
+		Key:              WireKey{ID: "m1", FromMe: false},
+		MessageTimestamp: 100,
+		Message:          map[string]any{"conversation": "first"},
+	}
+
+	app.upsertMessage("15551230001@s.whatsapp.net", msg)
+	time.Sleep(50 * time.Millisecond)
+
+	raw, err := os.ReadFile(app.cachePath)
+	if err != nil {
+		t.Fatalf("read cache file: %v", err)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("cache file was written during history sync: %q", string(raw))
+	}
+
+	app.historySyncing = false
+	app.upsertMessage("15551230001@s.whatsapp.net", WireMessage{
+		Key:              WireKey{ID: "m2", FromMe: false},
+		MessageTimestamp: 101,
+		Message:          map[string]any{"conversation": "second"},
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err = os.ReadFile(app.cachePath)
+		if err == nil && len(raw) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for persisted state")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Logout success.
 func TestHandleLogoutSuccess(t *testing.T) {
 	app := newTestApp(t)
 	app.started = true

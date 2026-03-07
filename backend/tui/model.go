@@ -54,6 +54,8 @@ var currentTheme Theme
 type Config struct {
 	ThemeName    string `json:"theme_name"`
 	MouseEnabled bool   `json:"mouse_enabled"`
+	SoundEnabled bool   `json:"sound_enabled"`
+	SoundProfile int    `json:"sound_profile"`
 }
 
 var currentConfig Config
@@ -134,6 +136,10 @@ type m struct {
 	emojiResultsCache                        []emojiItem
 	emojiResultsDirty                        bool
 	restartRequested                         bool
+	soundEnabled                             bool
+	soundProfile                             int
+	lastNotifyAt                             map[string]time.Time
+	lastNotifyGlobal                         time.Time
 	lastTypeTime                             time.Time
 	identityVersion                          int
 	sidebarMarqueeOffset                     int
@@ -143,6 +149,7 @@ type m struct {
 	sidebarMarqueeTick                       int
 	sidebarHighlightKey                      string
 	sidebarHighlightInset                    int
+	windowTitle                              string
 	sidebarCache                             *sidebarCache
 	mainCache                                *renderCache
 	inputBuf                                 string
@@ -224,7 +231,7 @@ type syncGroupsDoneMsg struct {
 
 func (x m) Init() tea.Cmd {
 	if x.demoMode {
-		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick())
+		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"))
 	}
-	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir, x.apiToken), nextCursorBlink(), nextSpinnerTick())
+	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir, x.apiToken), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"))
 }

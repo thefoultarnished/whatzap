@@ -12,6 +12,8 @@ func TestSaveAndLoadConfigUsesOverride(t *testing.T) {
 	currentConfig = Config{
 		ThemeName:    "aurora",
 		MouseEnabled: false,
+		SoundEnabled: false,
+		SoundProfile: 5,
 	}
 	saveConfig()
 
@@ -23,6 +25,12 @@ func TestSaveAndLoadConfigUsesOverride(t *testing.T) {
 	}
 	if currentConfig.MouseEnabled {
 		t.Fatalf("mouse enabled = true, want false")
+	}
+	if currentConfig.SoundEnabled {
+		t.Fatalf("sound enabled = true, want false")
+	}
+	if currentConfig.SoundProfile != 5 {
+		t.Fatalf("sound profile = %d, want 5", currentConfig.SoundProfile)
 	}
 }
 

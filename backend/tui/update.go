@@ -68,6 +68,9 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "message":
 			var wm wireMsg
 			if err := json.Unmarshal(v.evt.Payload, &wm); err == nil {
+				notify := false
+				notifyTitle := ""
+				notifyBody := ""
 				exists := false
 				for _, existing := range x.msgs[wm.Key.RemoteJID] {
 					if wm.Key.ID != "" && existing.Key.ID == wm.Key.ID {
@@ -83,6 +86,18 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					x.flashUntil[wm.Key.ID] = time.Now().Add(5 * time.Second)
 					x.msgActivityUntil = time.Now().Add(3 * time.Second)
 					x.msgActivityType = "received"
+					if x.shouldNotifyIncoming(wm) {
+						notify = true
+						notifyTitle = "New message from " + x.nameFor(wm.Key.RemoteJID)
+						notifyBody = messagePreviewForNotification(wm)
+					}
+				}
+				if notify {
+					soundCmd := tea.Cmd(nil)
+					if x.soundEnabled {
+						soundCmd = playSoundProfileCmd(x.soundProfile)
+					}
+					cmds = append(cmds, tea.Batch(x.setTopBar(notifyTitle+": "+notifyBody), soundCmd))
 				}
 			}
 		case "receipt":
@@ -167,6 +182,9 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.chats = v.chats
 		sort.Slice(x.chats, func(i, j int) bool { return x.chats[i].ConversationTimestamp > x.chats[j].ConversationTimestamp })
 		x.ensureSideVisible(x.sideViewRows())
+		if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
+			return x, titleCmd
+		}
 	case contactsMsg:
 		if v.err != nil {
 			x.err = ""
@@ -252,7 +270,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.status = v.msg
 		x.err = ""
 		x.mainCache.result = ""
-		return x, tea.Batch(x.setTopBar(v.msg), tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tea.QuitMsg{} }))
+		return x, tea.Batch(setTerminalTitleCmd("WhatZap"), x.setTopBar(v.msg), tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return tea.QuitMsg{} }))
 	case tea.MouseMsg:
 		if v.Action == tea.MouseActionPress && v.Button == tea.MouseButtonLeft && x.mode == "chat" && x.active != "" {
 			sidePad := max(2, x.w/20)
@@ -337,6 +355,71 @@ func (x m) callBanner(cm callMsg) string {
 	default:
 		return "Call update: " + name
 	}
+}
+
+func messagePreviewForNotification(msg wireMsg) string {
+	body := strings.TrimSpace(renderMessageBody(msg.Message))
+	body = strings.Join(strings.Fields(body), " ")
+	if body == "" {
+		body = "(message)"
+	}
+	r := []rune(body)
+	if len(r) > 90 {
+		body = string(r[:90]) + "..."
+	}
+	return body
+}
+
+func setTerminalTitleCmd(title string) tea.Cmd {
+	return func() tea.Msg {
+		clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
+		if clean == "" {
+			clean = "WhatZap"
+		}
+		fmt.Printf("\033]0;%s\a", clean)
+		return nil
+	}
+}
+
+func (x *m) refreshWindowTitleCmd() tea.Cmd {
+	totalUnread := 0
+	for _, ch := range x.chats {
+		if ch.UnreadCount > 0 {
+			totalUnread += ch.UnreadCount
+		}
+	}
+	title := "WhatZap"
+	if totalUnread > 0 {
+		title = fmt.Sprintf("WhatZap (%d new)", totalUnread)
+	}
+	if x.windowTitle == title {
+		return nil
+	}
+	x.windowTitle = title
+	return setTerminalTitleCmd(title)
+}
+
+func (x *m) shouldNotifyIncoming(wm wireMsg) bool {
+	if wm.Key.FromMe || wm.Key.RemoteJID == "" {
+		return false
+	}
+	// Keep alerts quiet while you're already looking at that chat.
+	if x.mode == "chat" && !x.sidebarFocused && !x.leftInputFocused && x.active == wm.Key.RemoteJID {
+		return false
+	}
+	now := time.Now()
+	if !x.lastNotifyGlobal.IsZero() && now.Sub(x.lastNotifyGlobal) < 1200*time.Millisecond {
+		return false
+	}
+	if last, ok := x.lastNotifyAt[wm.Key.RemoteJID]; ok && now.Sub(last) < 4*time.Second {
+		return false
+	}
+	x.lastNotifyGlobal = now
+	if x.lastNotifyAt == nil {
+		x.lastNotifyAt = map[string]time.Time{}
+	}
+	x.lastNotifyAt[wm.Key.RemoteJID] = now
+	return true
 }
 
 func preferredContact(a, b contact) contact {
@@ -509,9 +592,8 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		x.scroll = 0
 		x.sidebarTab = "contacts"
 		x.sidebarFocused = true
-		if x.mode == "chat" {
-			x.mode = "nav"
-		}
+		x.mode = "search"
+		x.searchInput = ""
 		x.sel = 0
 		x.sideScroll = 0
 		x.mainCache.result = ""
@@ -1246,6 +1328,28 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		currentConfig.MouseEnabled = false
 		saveConfig()
 		return x.setTopBar("Mouse: Disabled"), true
+	case txt == "/sound1", txt == "/sound2", txt == "/sound3", txt == "/sound4", txt == "/sound5":
+		profile := int(txt[len(txt)-1] - '0')
+		profile = normalizeSoundProfile(profile)
+		x.soundProfile = profile
+		x.soundEnabled = true
+		currentConfig.SoundProfile = profile
+		currentConfig.SoundEnabled = true
+		saveConfig()
+		// Quick preview helps you pick a tone without guesswork.
+		return tea.Batch(x.setTopBar("Sound: "+soundName(profile)), playSoundProfileCmd(profile)), true
+	case txt == "/soundoff":
+		x.soundEnabled = false
+		currentConfig.SoundEnabled = false
+		saveConfig()
+		return x.setTopBar("Sound: Off"), true
+	case txt == "/soundon":
+		x.soundEnabled = true
+		x.soundProfile = normalizeSoundProfile(x.soundProfile)
+		currentConfig.SoundEnabled = true
+		currentConfig.SoundProfile = x.soundProfile
+		saveConfig()
+		return tea.Batch(x.setTopBar("Sound: "+soundName(x.soundProfile)), playSoundProfileCmd(x.soundProfile)), true
 	case strings.HasPrefix(txt, "/"):
 		return x.setTopBar("unknown command: " + txt), true
 	}
@@ -1306,6 +1410,7 @@ func rehashStyles() {
 	cmdBadgeStyle = lipgloss.NewStyle().Foreground(badgeInk).Background(accent).Bold(true)
 	ghostStyle = lipgloss.NewStyle().Foreground(muted)
 	cursorStyle = lipgloss.NewStyle().Foreground(cursorColor).Background(cursorColor)
+	inputCursorStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 
 	sidebarStyle = lipgloss.NewStyle().
 		Padding(0, 1).
@@ -1343,15 +1448,22 @@ func (x m) sidebarItems() []chat {
 			if ct.ID == "" || strings.HasSuffix(ct.ID, "@g.us") || ct.ID == "status@broadcast" {
 				continue
 			}
+			// Contacts tab should only show named contacts, not raw unresolved numbers.
+			if strings.TrimSpace(ct.Notify) == "" && strings.TrimSpace(ct.Name) == "" {
+				continue
+			}
 			out = append(out, chat{ID: ct.ID, Name: ct.Notify, Subject: ct.Name})
 		}
 		sort.Slice(out, func(i, j int) bool {
-			li := strings.ToLower(x.name(out[i]))
-			lj := strings.ToLower(x.name(out[j]))
-			if li == lj {
+			classI, keyI := contactSortKey(x.name(out[i]))
+			classJ, keyJ := contactSortKey(x.name(out[j]))
+			if classI != classJ {
+				return classI < classJ
+			}
+			if keyI == keyJ {
 				return out[i].ID < out[j].ID
 			}
-			return li < lj
+			return keyI < keyJ
 		})
 		if x.sidebarCache != nil {
 			x.sidebarCache.contacts = out
@@ -1371,6 +1483,23 @@ func (x m) sidebarItems() []chat {
 		out = append(out, ch)
 	}
 	return out
+}
+
+func contactSortKey(name string) (class int, key string) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return 2, ""
+	}
+	first := rune(0)
+	for _, r := range trimmed {
+		first = r
+		break
+	}
+	lower := strings.ToLower(trimmed)
+	if (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') {
+		return 0, lower
+	}
+	return 1, lower
 }
 
 func (x m) filtered() []chat {

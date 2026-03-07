@@ -80,12 +80,15 @@ func loadConfig() {
 	currentConfig = Config{
 		ThemeName:    "tokyonight",
 		MouseEnabled: true,
+		SoundEnabled: true,
+		SoundProfile: 2,
 	}
 	path := resolveConfigPath()
 	data, err := os.ReadFile(path)
 	if err == nil {
 		_ = json.Unmarshal(data, &currentConfig)
 	}
+	currentConfig.SoundProfile = normalizeSoundProfile(currentConfig.SoundProfile)
 }
 
 func sanitizeOutgoingText(s string) string {

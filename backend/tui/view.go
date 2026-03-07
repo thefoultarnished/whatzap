@@ -82,7 +82,7 @@ func (x m) View() string {
 			Height(outerH).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(brand).
-		Render(content)
+			Render(content)
 	}
 	outerW := frameW
 	outerH := x.h - 2
@@ -308,7 +308,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 			}
 			inputDisplay += ghostStyle.Render(restGhost)
 		} else if rightFocused && x.cursorOn {
-			inputDisplay += lipgloss.NewStyle().Foreground(accent).Bold(true).Render("█")
+			inputDisplay += inputCursorStyle.Render(inputCursorGlyph)
 		} else if rightFocused {
 			inputDisplay += " "
 		}
@@ -335,7 +335,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
 		if x.cursorOn {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
-				lipgloss.NewStyle().Foreground(accent).Bold(true).Render("█") +
+				inputCursorStyle.Render(inputCursorGlyph) +
 				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E for emoji")
 		} else {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E for emoji")
@@ -453,14 +453,27 @@ func (x m) renderSearchBox() string {
 	searchIconText := "⌕ "
 	searchIcon := mutedStyle.Render(searchIconText)
 	searchLine := searchIcon
+	placeholder := "search [Alt+S]"
+	if x.sidebarTab == "contacts" {
+		placeholder = "type to search users"
+	}
+	if searchFocused && x.sidebarTab == "contacts" && searchValue == "" {
+		if x.cursorOn {
+			searchLine += inputCursorStyle.Render(inputCursorGlyph)
+		} else {
+			searchLine += " "
+		}
+		searchLine += mutedStyle.Render(placeholder)
+		return searchLine
+	}
 	if searchValue == "" && !searchFocused {
-		searchLine += mutedStyle.Render("search [Alt+S]")
+		searchLine += mutedStyle.Render(placeholder)
 	} else if searchValue != "" {
 		searchLine += lipgloss.NewStyle().Foreground(text).Render(searchValue)
 	}
 	if searchFocused {
 		if x.cursorOn {
-			searchLine += lipgloss.NewStyle().Foreground(accent).Render("|")
+			searchLine += inputCursorStyle.Render(inputCursorGlyph)
 		} else {
 			searchLine += " "
 		}

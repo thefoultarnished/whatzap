@@ -101,8 +101,8 @@ type App struct {
 	client         *whatsmeow.Client
 	db             *sql.DB
 	storeContainer *sqlstore.Container
-	started   bool
-	connected bool
+	started        bool
+	connected      bool
 
 	cacheDir  string
 	cachePath string
@@ -114,6 +114,7 @@ type App struct {
 	wsClients map[*websocket.Conn]struct{}
 
 	needsBootstrapSync bool
+	historySyncing     bool
 }
 
 const maxUploadBytes = 100 * 1024 * 1024
@@ -525,6 +526,15 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 		return
 	}
 
+	a.mu.Lock()
+	a.historySyncing = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.historySyncing = false
+		a.mu.Unlock()
+	}()
+
 	changedChats := false
 
 	a.mu.Lock()
@@ -669,7 +679,9 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 	if msg.PushName != "" && !msg.Key.FromMe && !strings.HasSuffix(chatID, "@g.us") {
 		a.state.Contacts[chatID] = Contact{ID: chatID, Notify: msg.PushName}
 	}
-	go a.persistState()
+	if !a.historySyncing {
+		go a.persistState()
+	}
 	go a.upsertPermission(phoneFromJID(chatID), msg.PushName)
 }
 

@@ -65,6 +65,7 @@ var (
 		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
 		"/theme", "/theme1tokyonight", "/theme2catppuccin", "/theme3monokai", "/theme4charcoal", "/theme5aurora", "/theme6sakura", "/theme7abyssal",
 		"/mouseon", "/mouseoff",
+		"/sound1", "/sound2", "/sound3", "/sound4", "/sound5", "/soundon", "/soundoff",
 	}
 	chatCommands = []string{
 		"/emoji",
@@ -87,9 +88,11 @@ var (
 	purpleStyle = lipgloss.NewStyle().Foreground(purple).Bold(true)
 	redStyle    = lipgloss.NewStyle().Foreground(red).Bold(true)
 
-	cmdBadgeStyle = lipgloss.NewStyle().Foreground(badgeInk).Background(accent).Bold(true)
-	ghostStyle    = lipgloss.NewStyle().Foreground(muted)
-	cursorStyle   = lipgloss.NewStyle().Foreground(cursorColor).Background(cursorColor)
+	cmdBadgeStyle    = lipgloss.NewStyle().Foreground(badgeInk).Background(accent).Bold(true)
+	ghostStyle       = lipgloss.NewStyle().Foreground(muted)
+	cursorStyle      = lipgloss.NewStyle().Foreground(cursorColor).Background(cursorColor)
+	inputCursorStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	inputCursorGlyph = "█"
 
 	sidebarStyle = lipgloss.NewStyle().
 			Padding(0, 1).

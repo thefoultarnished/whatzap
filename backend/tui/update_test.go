@@ -51,10 +51,10 @@ func TestRenderChatInputFocusedTypableShowsBlinkingCursorState(t *testing.T) {
 	rehashStyles()
 
 	base := m{
-		mode:          "chat",
-		active:        "15551230001@s.whatsapp.net",
-		whitelist:     map[string]string{"15551230001": "Allowed"},
-		sidebarFocused: false,
+		mode:             "chat",
+		active:           "15551230001@s.whatsapp.net",
+		whitelist:        map[string]string{"15551230001": "Allowed"},
+		sidebarFocused:   false,
 		leftInputFocused: false,
 	}
 
@@ -362,5 +362,85 @@ func TestChatEnterAppendsOptimisticOutgoingMessageImmediately(t *testing.T) {
 	}
 	if body, _ := msgs[0].Message["conversation"].(string); body != "hello now" {
 		t.Fatalf("optimistic message body = %q, want %q", body, "hello now")
+	}
+}
+
+func TestRunCommandSoundProfileAndToggle(t *testing.T) {
+	t.Setenv("WHATZAP_DATA_DIR", t.TempDir())
+	currentConfig = Config{
+		ThemeName:    "tokyonight",
+		MouseEnabled: true,
+		SoundEnabled: true,
+		SoundProfile: 2,
+	}
+
+	model := m{
+		soundEnabled: true,
+		soundProfile: 2,
+	}
+
+	cmd, ok := model.runCommand("/sound4", true)
+	if !ok || cmd == nil {
+		t.Fatalf("expected /sound4 to be handled with preview command")
+	}
+	if !model.soundEnabled || model.soundProfile != 4 {
+		t.Fatalf("model sound state after /sound4 = enabled:%v profile:%d, want enabled:true profile:4", model.soundEnabled, model.soundProfile)
+	}
+	if !currentConfig.SoundEnabled || currentConfig.SoundProfile != 4 {
+		t.Fatalf("config sound state after /sound4 = enabled:%v profile:%d, want enabled:true profile:4", currentConfig.SoundEnabled, currentConfig.SoundProfile)
+	}
+
+	cmd, ok = model.runCommand("/soundoff", true)
+	if !ok || cmd == nil {
+		t.Fatalf("expected /soundoff to be handled")
+	}
+	if model.soundEnabled {
+		t.Fatalf("model sound should be disabled after /soundoff")
+	}
+	if currentConfig.SoundEnabled {
+		t.Fatalf("config sound should be disabled after /soundoff")
+	}
+
+	cmd, ok = model.runCommand("/soundon", true)
+	if !ok || cmd == nil {
+		t.Fatalf("expected /soundon to be handled with preview command")
+	}
+	if !model.soundEnabled || model.soundProfile != 4 {
+		t.Fatalf("model sound state after /soundon = enabled:%v profile:%d, want enabled:true profile:4", model.soundEnabled, model.soundProfile)
+	}
+	if !currentConfig.SoundEnabled || currentConfig.SoundProfile != 4 {
+		t.Fatalf("config sound state after /soundon = enabled:%v profile:%d, want enabled:true profile:4", currentConfig.SoundEnabled, currentConfig.SoundProfile)
+	}
+}
+
+func TestRefreshWindowTitleCmdTracksUnreadCounts(t *testing.T) {
+	model := m{
+		chats: []chat{
+			{ID: "a@s.whatsapp.net", UnreadCount: 2},
+			{ID: "b@s.whatsapp.net", UnreadCount: 1},
+		},
+	}
+
+	cmd := model.refreshWindowTitleCmd()
+	if cmd == nil {
+		t.Fatalf("expected title update command for unread chats")
+	}
+	if model.windowTitle != "WhatZap (3 new)" {
+		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap (3 new)")
+	}
+
+	cmd = model.refreshWindowTitleCmd()
+	if cmd != nil {
+		t.Fatalf("expected no-op title command when title is unchanged")
+	}
+
+	model.chats[0].UnreadCount = 0
+	model.chats[1].UnreadCount = 0
+	cmd = model.refreshWindowTitleCmd()
+	if cmd == nil {
+		t.Fatalf("expected title reset command when unread count clears")
+	}
+	if model.windowTitle != "WhatZap" {
+		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap")
 	}
 }
