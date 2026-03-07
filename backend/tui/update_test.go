@@ -415,9 +415,16 @@ func TestRunCommandSoundProfileAndToggle(t *testing.T) {
 
 func TestRefreshWindowTitleCmdTracksUnreadCounts(t *testing.T) {
 	model := m{
+		contacts: map[string]contact{
+			"a@s.whatsapp.net": {ID: "a@s.whatsapp.net", Notify: "Alice Johnson"},
+			"b@s.whatsapp.net": {ID: "b@s.whatsapp.net", Notify: "Bob Stone"},
+			"c@s.whatsapp.net": {ID: "c@s.whatsapp.net", Notify: "Charlie Fox"},
+		},
+		contactsByNumber: map[string]contact{},
 		chats: []chat{
-			{ID: "a@s.whatsapp.net", UnreadCount: 2},
-			{ID: "b@s.whatsapp.net", UnreadCount: 1},
+			{ID: "a@s.whatsapp.net", UnreadCount: 3},
+			{ID: "b@s.whatsapp.net", UnreadCount: 2},
+			{ID: "c@s.whatsapp.net", UnreadCount: 1},
 		},
 	}
 
@@ -425,8 +432,8 @@ func TestRefreshWindowTitleCmdTracksUnreadCounts(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected title update command for unread chats")
 	}
-	if model.windowTitle != "WhatZap (3 new)" {
-		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap (3 new)")
+	if model.windowTitle != "WhatZap (🟢 Alice,Bob,Charlie)" {
+		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap (🟢 Alice,Bob,Charlie)")
 	}
 
 	cmd = model.refreshWindowTitleCmd()
@@ -436,11 +443,35 @@ func TestRefreshWindowTitleCmdTracksUnreadCounts(t *testing.T) {
 
 	model.chats[0].UnreadCount = 0
 	model.chats[1].UnreadCount = 0
+	model.chats[2].UnreadCount = 0
 	cmd = model.refreshWindowTitleCmd()
 	if cmd == nil {
 		t.Fatalf("expected title reset command when unread count clears")
 	}
 	if model.windowTitle != "WhatZap" {
 		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap")
+	}
+}
+
+func TestRefreshWindowTitleCmdShowsOnlyFirstThreeNames(t *testing.T) {
+	model := m{
+		contacts: map[string]contact{
+			"a@s.whatsapp.net": {ID: "a@s.whatsapp.net", Notify: "Alice Johnson"},
+			"b@s.whatsapp.net": {ID: "b@s.whatsapp.net", Notify: "Bob Stone"},
+			"c@s.whatsapp.net": {ID: "c@s.whatsapp.net", Notify: "Charlie Fox"},
+			"d@s.whatsapp.net": {ID: "d@s.whatsapp.net", Notify: "Dora Reed"},
+		},
+		contactsByNumber: map[string]contact{},
+		chats: []chat{
+			{ID: "a@s.whatsapp.net", UnreadCount: 1},
+			{ID: "b@s.whatsapp.net", UnreadCount: 1},
+			{ID: "c@s.whatsapp.net", UnreadCount: 1},
+			{ID: "d@s.whatsapp.net", UnreadCount: 1},
+		},
+	}
+
+	_ = model.refreshWindowTitleCmd()
+	if model.windowTitle != "WhatZap (🟢 Alice,Bob,Charlie +1)" {
+		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap (🟢 Alice,Bob,Charlie +1)")
 	}
 }

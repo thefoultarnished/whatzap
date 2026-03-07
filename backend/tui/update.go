@@ -71,6 +71,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				notify := false
 				notifyTitle := ""
 				notifyBody := ""
+				activeViewing := x.mode == "chat" && !x.sidebarFocused && !x.leftInputFocused && x.active == wm.Key.RemoteJID
 				exists := false
 				for _, existing := range x.msgs[wm.Key.RemoteJID] {
 					if wm.Key.ID != "" && existing.Key.ID == wm.Key.ID {
@@ -83,6 +84,16 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				x.mainCache.result = ""
 				if !wm.Key.FromMe && wm.Key.ID != "" {
+					if !activeViewing {
+						for i := range x.chats {
+							if x.chats[i].ID == wm.Key.RemoteJID {
+								x.chats[i].UnreadCount++
+								break
+							}
+						}
+					} else if !x.demoMode {
+						cmds = append(cmds, postJSON(x.client, x.baseURL+"/messages/read", map[string]string{"chatId": wm.Key.RemoteJID}, func([]byte) tea.Msg { return dataErr{} }))
+					}
 					x.flashUntil[wm.Key.ID] = time.Now().Add(5 * time.Second)
 					x.msgActivityUntil = time.Now().Add(3 * time.Second)
 					x.msgActivityType = "received"
@@ -98,6 +109,9 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						soundCmd = playSoundProfileCmd(x.soundProfile)
 					}
 					cmds = append(cmds, tea.Batch(x.setTopBar(notifyTitle+": "+notifyBody), soundCmd))
+				}
+				if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
+					cmds = append(cmds, titleCmd)
 				}
 			}
 		case "receipt":
@@ -371,32 +385,82 @@ func messagePreviewForNotification(msg wireMsg) string {
 }
 
 func setTerminalTitleCmd(title string) tea.Cmd {
-	return func() tea.Msg {
-		clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
-		if clean == "" {
-			clean = "WhatZap"
-		}
+	clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
+	if clean == "" {
+		clean = "WhatZap"
+	}
+	legacy := func() tea.Msg {
 		fmt.Printf("\033]0;%s\a", clean)
+		fmt.Printf("\033]2;%s\a", clean)
 		return nil
 	}
+	return tea.Batch(tea.SetWindowTitle(clean), legacy)
 }
 
 func (x *m) refreshWindowTitleCmd() tea.Cmd {
-	totalUnread := 0
-	for _, ch := range x.chats {
-		if ch.UnreadCount > 0 {
-			totalUnread += ch.UnreadCount
-		}
-	}
 	title := "WhatZap"
-	if totalUnread > 0 {
-		title = fmt.Sprintf("WhatZap (%d new)", totalUnread)
+	names := x.unreadTitleNames(3)
+	if len(names) > 0 {
+		extra := x.unreadNamedChatCount() - len(names)
+		if extra > 0 {
+			title = fmt.Sprintf("WhatZap (🟢 %s +%d)", strings.Join(names, ","), extra)
+		} else {
+			title = fmt.Sprintf("WhatZap (🟢 %s)", strings.Join(names, ","))
+		}
 	}
 	if x.windowTitle == title {
 		return nil
 	}
 	x.windowTitle = title
 	return setTerminalTitleCmd(title)
+}
+
+func (x *m) unreadNamedChatCount() int {
+	count := 0
+	for _, ch := range x.chats {
+		if ch.UnreadCount > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func firstNameForTitle(name string) string {
+	fields := strings.Fields(strings.TrimSpace(name))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func (x *m) unreadTitleNames(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	seen := map[string]struct{}{}
+	for _, ch := range x.chats {
+		if ch.UnreadCount <= 0 {
+			continue
+		}
+		n := firstNameForTitle(x.nameFor(ch.ID))
+		if n == "" {
+			n = firstNameForTitle(num(ch.ID))
+		}
+		if n == "" {
+			continue
+		}
+		key := strings.ToLower(n)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, n)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
 }
 
 func (x *m) shouldNotifyIncoming(wm wireMsg) bool {
@@ -1701,11 +1765,18 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 	}
 
 	if x.demoMode {
+		if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
+			return x, titleCmd
+		}
 		return x, nil
 	}
 
-	return x, tea.Batch(
+	batch := []tea.Cmd{
 		getMsgs(x.client, x.baseURL, x.active, 120),
 		postJSON(x.client, x.baseURL+"/messages/read", map[string]string{"chatId": x.active}, func([]byte) tea.Msg { return dataErr{} }),
-	)
+	}
+	if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
+		batch = append(batch, titleCmd)
+	}
+	return x, tea.Batch(batch...)
 }
