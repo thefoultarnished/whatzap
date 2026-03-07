@@ -826,16 +826,18 @@ func (x m) renderMain(w, h int) string {
 				quoteSuffix := " ─╮ "
 				quoteStyled = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
-					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText)
+					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)).Render(qText)
 				quoteStyledRight = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
-					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor).Italic(true)).Render(qText) +
+					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)).Render(qText) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quoteSuffix)
 				quotePlainRight = qSender + ": " + qText + quoteSuffix
 			}
 		}
 		outgoingBlockW := 0
+		outgoingBodyW := 0
 		if msg.Key.FromMe {
 			for i, ln := range wrapped {
+				outgoingBodyW = max(outgoingBodyW, runeDisplayWidth(ln+" "))
 				lineMeasure := ln
 				if i == len(wrapped)-1 {
 					lineMeasure += "  " + timeStr + receiptText + " "
@@ -852,9 +854,9 @@ func (x m) renderMain(w, h int) string {
 		indent := outgoingMessageIndent(max(1, w-2), outgoingBlockW, msg.Key.FromMe)
 		if quoteStyled != "" {
 			if msg.Key.FromMe {
-				// Right-align quote so ─╮ connector aligns with message block right edge
+				// Anchor the quote connector to message text, not the trailing receipt/time.
 				qPlainW := runeDisplayWidth(quotePlainRight)
-				qIndent := max(0, len(indent)+outgoingBlockW-qPlainW)
+				qIndent := max(0, len(indent)+outgoingBodyW-qPlainW)
 				block = append(block, strings.Repeat(" ", qIndent)+quoteStyledRight)
 			} else {
 				block = append(block, quoteStyled)

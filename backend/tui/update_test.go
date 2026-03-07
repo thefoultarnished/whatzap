@@ -169,7 +169,7 @@ func TestRenderMainQuoteUsesSentColorsWhenQuotingMe(t *testing.T) {
 
 	rendered := model.renderMain(80, 8)
 	quotePrefix := lipgloss.NewStyle().Foreground(sentName).Bold(true).Render("Me: ")
-	quoteBody := lipgloss.NewStyle().Foreground(sentText).Italic(true).Render("my old message")
+	quoteBody := lipgloss.NewStyle().Foreground(sentText).Render("my old message")
 	if !strings.Contains(rendered, quotePrefix) || !strings.Contains(rendered, quoteBody) {
 		t.Fatalf("self-quote did not use sent colors: %q", rendered)
 	}
@@ -207,7 +207,7 @@ func TestRenderMainQuoteUsesReceivedColorsWhenQuotingOtherSender(t *testing.T) {
 
 	rendered := model.renderMain(80, 8)
 	quotePrefix := lipgloss.NewStyle().Foreground(receivedName).Bold(true).Render("bob: ")
-	quoteBody := lipgloss.NewStyle().Foreground(receivedText).Italic(true).Render("their old message")
+	quoteBody := lipgloss.NewStyle().Foreground(receivedText).Render("their old message")
 	if !strings.Contains(rendered, quotePrefix) || !strings.Contains(rendered, quoteBody) {
 		t.Fatalf("received quote did not use received colors: %q", rendered)
 	}
@@ -410,6 +410,55 @@ func TestRunCommandSoundProfileAndToggle(t *testing.T) {
 	}
 	if !currentConfig.SoundEnabled || currentConfig.SoundProfile != 4 {
 		t.Fatalf("config sound state after /soundon = enabled:%v profile:%d, want enabled:true profile:4", currentConfig.SoundEnabled, currentConfig.SoundProfile)
+	}
+}
+
+func TestNavListWrapAround(t *testing.T) {
+	model := m{
+		status: "ready",
+		mode:   "nav",
+		chats: []chat{
+			{ID: "a@s.whatsapp.net", ConversationTimestamp: 3},
+			{ID: "b@s.whatsapp.net", ConversationTimestamp: 2},
+			{ID: "c@s.whatsapp.net", ConversationTimestamp: 1},
+		},
+		sel: 0,
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyUp})
+	got := next.(m)
+	if got.sel != 2 {
+		t.Fatalf("nav up wrap sel = %d, want 2", got.sel)
+	}
+
+	next, _ = got.key(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(m)
+	if got.sel != 0 {
+		t.Fatalf("nav down wrap sel = %d, want 0", got.sel)
+	}
+}
+
+func TestSearchListWrapAround(t *testing.T) {
+	model := m{
+		status: "ready",
+		mode:   "search",
+		chats: []chat{
+			{ID: "a@s.whatsapp.net", ConversationTimestamp: 3},
+			{ID: "b@s.whatsapp.net", ConversationTimestamp: 2},
+		},
+		sel: 0,
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyUp})
+	got := next.(m)
+	if got.sel != 1 {
+		t.Fatalf("search up wrap sel = %d, want 1", got.sel)
+	}
+
+	next, _ = got.key(tea.KeyMsg{Type: tea.KeyDown})
+	got = next.(m)
+	if got.sel != 0 {
+		t.Fatalf("search down wrap sel = %d, want 0", got.sel)
 	}
 }
 

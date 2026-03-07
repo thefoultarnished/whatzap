@@ -774,13 +774,15 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.sidebarFocused = true
 			x.ensureSideVisible(x.sideViewRows())
 		case "up":
-			if x.sel > 0 {
-				x.sel--
+			f := x.filtered()
+			if len(f) > 0 {
+				x.sel = wrappedIndex(x.sel, len(f), -1)
 			}
 			x.ensureSideVisible(x.sideViewRows())
 		case "down":
-			if x.sel < len(x.filtered())-1 {
-				x.sel++
+			f := x.filtered()
+			if len(f) > 0 {
+				x.sel = wrappedIndex(x.sel, len(f), 1)
 			}
 			x.ensureSideVisible(x.sideViewRows())
 		case "enter":
@@ -808,13 +810,15 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				x.ensureSideVisible(x.sideViewRows())
 			}
 		case tea.KeyUp:
-			if x.sel > 0 {
-				x.sel--
+			f := x.filtered()
+			if len(f) > 0 {
+				x.sel = wrappedIndex(x.sel, len(f), -1)
 			}
 			x.ensureSideVisible(x.sideViewRows())
 		case tea.KeyDown:
-			if x.sel < len(x.filtered())-1 {
-				x.sel++
+			f := x.filtered()
+			if len(f) > 0 {
+				x.sel = wrappedIndex(x.sel, len(f), 1)
 			}
 			x.ensureSideVisible(x.sideViewRows())
 		case tea.KeyEnter:
@@ -920,11 +924,11 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			next := cur
-			if k.Type == tea.KeyUp && cur > 0 {
-				next = cur - 1
+			if k.Type == tea.KeyUp {
+				next = wrappedIndex(cur, len(f), -1)
 			}
-			if k.Type == tea.KeyDown && cur < len(f)-1 {
-				next = cur + 1
+			if k.Type == tea.KeyDown {
+				next = wrappedIndex(cur, len(f), 1)
 			}
 			if next != cur {
 				x.sel = next
@@ -970,8 +974,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.ensureSideVisible(x.sideViewRows())
 		case tea.KeyUp:
 			if x.sidebarFocused {
-				if x.sel > 0 {
-					x.sel--
+				f := x.filtered()
+				if len(f) > 0 {
+					x.sel = wrappedIndex(x.sel, len(f), -1)
 				}
 				x.ensureSideVisible(x.sideViewRows())
 				return x.openSelectedChat()
@@ -979,8 +984,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.scroll++
 		case tea.KeyDown:
 			if x.sidebarFocused {
-				if x.sel < len(x.filtered())-1 {
-					x.sel++
+				f := x.filtered()
+				if len(f) > 0 {
+					x.sel = wrappedIndex(x.sel, len(f), 1)
 				}
 				x.ensureSideVisible(x.sideViewRows())
 				return x.openSelectedChat()
@@ -1095,6 +1101,18 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return x, nil
+}
+
+func wrappedIndex(cur, n, delta int) int {
+	if n <= 0 {
+		return 0
+	}
+	cur = ((cur % n) + n) % n
+	next := (cur + delta) % n
+	if next < 0 {
+		next += n
+	}
+	return next
 }
 
 func (x *m) handleSlash(txt string) (tea.Cmd, bool) {
