@@ -524,3 +524,15 @@ func TestRefreshWindowTitleCmdShowsOnlyFirstThreeNames(t *testing.T) {
 		t.Fatalf("windowTitle = %q, want %q", model.windowTitle, "WhatZap (🟢 Alice,Bob,Charlie +1)")
 	}
 }
+
+func TestHeaderAvatarInitials(t *testing.T) {
+	if got := headerAvatarInitials("Alice Brown", "15551230001@s.whatsapp.net"); got != "AB" {
+		t.Fatalf("headerAvatarInitials() = %q, want %q", got, "AB")
+	}
+	if got := headerAvatarInitials("alice", "15551230001@s.whatsapp.net"); got != "A " {
+		t.Fatalf("headerAvatarInitials() single = %q, want %q", got, "A ")
+	}
+	if got := headerAvatarInitials("", "15551230001@s.whatsapp.net"); got != "01" {
+		t.Fatalf("headerAvatarInitials() fallback = %q, want %q", got, "01")
+	}
+}

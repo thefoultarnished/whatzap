@@ -17,6 +17,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gorilla/websocket"
+
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 )
 
 const backendStartupLogLimit = 8192
@@ -274,6 +278,7 @@ func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
 		return msgsMsg{chatID: chatID, msgs: out.Messages}
 	}
 }
+
 func send(c *http.Client, base, chatID, text string, replyTo *wireMsg, pendingID string) tea.Cmd {
 	return func() tea.Msg {
 		payload := map[string]any{"chatId": chatID, "text": text}

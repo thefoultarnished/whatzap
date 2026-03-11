@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -160,6 +161,7 @@ func (x m) View() string {
 	return frame
 }
 
+
 func (x m) loadingPulse() string {
 	steps := []string{
 		"●○○",
@@ -216,8 +218,15 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 	if x.topBarMsg != "" && x.topBarShown > 0 {
 		centerContent = " " + purpleStyle.Render(graphemeSliceN(x.topBarMsg, x.topBarShown))
 	} else if x.active != "" {
-		chatName := accentStyle.Render(truncate(x.nameFor(x.active), 22))
-		centerContent = " " + chatName
+		displayName := x.nameFor(x.active)
+		nameLimit := 22
+		if centerW >= 24 {
+			avatar := renderHeaderAvatar(displayName, x.active)
+			nameLimit = 18
+			centerContent = " " + avatar + " " + accentStyle.Render(truncate(displayName, nameLimit))
+		} else {
+			centerContent = " " + accentStyle.Render(truncate(displayName, nameLimit))
+		}
 		if time.Now().Before(x.msgActivityUntil) && x.msgActivityType == "sent" {
 			centerContent += accentStyle.Copy().Bold(false).Render("  " + spinnerFrames[x.spinnerFrame] + " message sent")
 		}
@@ -230,6 +239,47 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 		Border(lipgloss.NormalBorder(), false, false, true, false).
 		BorderForeground(muted).
 		Render(headLine)
+}
+
+func renderHeaderAvatar(name, id string) string {
+	initials := headerAvatarInitials(name, id)
+	return lipgloss.NewStyle().
+		Foreground(buttonInk).
+		Background(brand).
+		Bold(true).
+		Render(" " + initials + " ")
+}
+
+func headerAvatarInitials(name, id string) string {
+	parts := strings.Fields(strings.TrimSpace(name))
+	initials := make([]rune, 0, 2)
+	for _, part := range parts {
+		for _, r := range part {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				initials = append(initials, unicode.ToUpper(r))
+				break
+			}
+		}
+		if len(initials) == 2 {
+			break
+		}
+	}
+	if len(initials) == 0 {
+		n := num(id)
+		rs := []rune(n)
+		if len(rs) >= 2 {
+			initials = append(initials, rs[len(rs)-2], rs[len(rs)-1])
+		} else if len(rs) == 1 {
+			initials = append(initials, rs[0])
+		}
+	}
+	if len(initials) == 1 {
+		initials = append(initials, ' ')
+	}
+	if len(initials) == 0 {
+		return "??"
+	}
+	return string(initials[:2])
 }
 
 func (x m) renderCommandBox(leftW int) string {

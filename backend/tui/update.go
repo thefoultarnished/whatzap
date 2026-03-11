@@ -196,8 +196,12 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.chats = v.chats
 		sort.Slice(x.chats, func(i, j int) bool { return x.chats[i].ConversationTimestamp > x.chats[j].ConversationTimestamp })
 		x.ensureSideVisible(x.sideViewRows())
+		cmds := []tea.Cmd{}
 		if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
-			return x, titleCmd
+			cmds = append(cmds, titleCmd)
+		}
+		if len(cmds) > 0 {
+			return x, tea.Batch(cmds...)
 		}
 	case contactsMsg:
 		if v.err != nil {
@@ -485,6 +489,7 @@ func (x *m) shouldNotifyIncoming(wm wireMsg) bool {
 	x.lastNotifyAt[wm.Key.RemoteJID] = now
 	return true
 }
+
 
 func preferredContact(a, b contact) contact {
 	score := func(c contact) int {
