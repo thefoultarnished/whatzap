@@ -161,7 +161,6 @@ func (x m) View() string {
 	return frame
 }
 
-
 func (x m) loadingPulse() string {
 	steps := []string{
 		"●○○",
