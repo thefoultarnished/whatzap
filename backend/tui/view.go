@@ -317,6 +317,8 @@ func (x m) renderCommandBox(leftW int) string {
 		Border(lipgloss.NormalBorder(), true, true, false, false).
 		BorderForeground(leftBorderColor).
 		Width(leftW).
+		Height(1).
+		MaxHeight(1).
 		Foreground(text).
 		Render(cmdContent)
 }

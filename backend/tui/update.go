@@ -112,7 +112,6 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						x.setTopBar(notifyTitle+": "+notifyBody),
 						soundCmd,
 						flashTaskbarCmd(),
-						showToastCmd(notifyTitle, notifyBody),
 					))
 				}
 				if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
@@ -146,7 +145,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cm callMsg
 			if err := json.Unmarshal(v.evt.Payload, &cm); err == nil {
 				banner := x.callBanner(cm)
-				cmds = append(cmds, tea.Batch(x.setTopBar(banner), flashTaskbarCmd(), showToastCmd("WhatZap call", banner)))
+				cmds = append(cmds, tea.Batch(x.setTopBar(banner), flashTaskbarCmd()))
 			}
 		}
 		return x, tea.Batch(cmds...)
