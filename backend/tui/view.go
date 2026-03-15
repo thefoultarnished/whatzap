@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -744,9 +745,10 @@ func (x m) renderMain(w, h int) string {
 	}
 	items := x.msgs[x.active]
 	type reactionRender struct {
-		emoji string
-		name  string
-		isMe  bool
+		emoji     string
+		name      string
+		isMe      bool
+		isContact bool
 	}
 	reactionsFor := map[string][]reactionRender{}
 	for _, msg := range items {
@@ -756,13 +758,18 @@ func (x m) renderMain(w, h int) string {
 			if targetID != "" && emoji != "" {
 				rSender := "Me"
 				rIsMe := msg.Key.FromMe
+				sid := x.senderIDForMsg(msg)
+				fullName := x.nameFor(sid)
+				senderNum := num(sid)
+				isKnown := rIsMe || x.names[senderNum] != "" || x.whitelist[senderNum] != ""
 				if !msg.Key.FromMe {
-					rSender = truncate(x.senderNameForMsg(msg), 10)
+					rSender = truncate(fullName, 10)
 				}
 				reactionsFor[targetID] = append(reactionsFor[targetID], reactionRender{
-					emoji: emoji,
-					name:  rSender,
-					isMe:  rIsMe,
+					emoji:     emoji,
+					name:      rSender,
+					isMe:      rIsMe,
+					isContact: isKnown,
 				})
 			}
 		}
@@ -862,10 +869,21 @@ func (x m) renderMain(w, h int) string {
 		reactionLinePlain := ""
 		reactionLine := ""
 		if rxns, ok := reactionsFor[msg.Key.ID]; ok && len(rxns) > 0 {
+			// Split into known contacts vs others.
+			var contactRxns []reactionRender
+			otherEmojis := map[string]int{}
+			for _, rxn := range rxns {
+				if rxn.isContact {
+					contactRxns = append(contactRxns, rxn)
+				} else {
+					otherEmojis[rxn.emoji]++
+				}
+			}
+
 			reactionPlainParts := []string{}
 			reactionStyledParts := []string{}
 			firstReactionColor := receivedName
-			for i, rxn := range rxns {
+			for i, rxn := range contactRxns {
 				reactionColor := receivedName
 				if rxn.isMe {
 					reactionColor = sentName
@@ -877,9 +895,45 @@ func (x m) renderMain(w, h int) string {
 				reactionStyledParts = append(reactionStyledParts,
 					applySelectedBG(lipgloss.NewStyle().Foreground(reactionColor).Bold(true)).Render(rxn.emoji+" "+rxn.name))
 			}
+
+			// Build summary for non-contact reactions.
+			if len(otherEmojis) > 0 {
+				sortedEmojis := make([]string, 0, len(otherEmojis))
+				for e := range otherEmojis {
+					sortedEmojis = append(sortedEmojis, e)
+				}
+				sort.Slice(sortedEmojis, func(i, j int) bool {
+					if otherEmojis[sortedEmojis[i]] != otherEmojis[sortedEmojis[j]] {
+						return otherEmojis[sortedEmojis[i]] > otherEmojis[sortedEmojis[j]]
+					}
+					return sortedEmojis[i] < sortedEmojis[j]
+				})
+				summaryPlainParts := []string{}
+				summaryStyledParts := []string{}
+				for _, emoji := range sortedEmojis {
+					count := otherEmojis[emoji]
+					summaryPlainParts = append(summaryPlainParts, fmt.Sprintf("%s %d", emoji, count))
+					summaryStyledParts = append(summaryStyledParts,
+						applySelectedBG(mutedStyle).Render(fmt.Sprintf("%s %d", emoji, count)))
+				}
+				if len(contactRxns) > 0 {
+					reactionPlainParts = append(reactionPlainParts, "│ "+strings.Join(summaryPlainParts, " "))
+					reactionStyledParts = append(reactionStyledParts,
+						applySelectedBG(mutedStyle).Render("│ ")+strings.Join(summaryStyledParts, applySelectedBG(mutedStyle).Render(" ")))
+				} else {
+					reactionPlainParts = append(reactionPlainParts, strings.Join(summaryPlainParts, " "))
+					reactionStyledParts = append(reactionStyledParts, strings.Join(summaryStyledParts, applySelectedBG(mutedStyle).Render(" ")))
+					firstReactionColor = muted
+				}
+			}
+
 			reactionLinePlain = "  ╰─ " + strings.Join(reactionPlainParts, ", ")
 			reactionPrefix := applySelectedBG(lipgloss.NewStyle().Foreground(firstReactionColor)).Render("  ╰─ ")
-			reactionLine = reactionPrefix + strings.Join(reactionStyledParts, applySelectedBG(mutedStyle).Render(", "))
+			if len(contactRxns) > 0 {
+				reactionLine = reactionPrefix + strings.Join(reactionStyledParts, applySelectedBG(mutedStyle).Render(", "))
+			} else {
+				reactionLine = reactionPrefix + strings.Join(reactionStyledParts, applySelectedBG(mutedStyle).Render(" "))
+			}
 		}
 
 		quoteStyled := ""
