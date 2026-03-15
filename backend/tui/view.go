@@ -322,13 +322,13 @@ func (x m) renderCommandBox(leftW int) string {
 		}
 		if ghost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(ghost)
-			if x.cursorOn {
+			if true {
 				cmdContent += cursorStyle.Render(firstGhost)
 			} else {
 				cmdContent += ghostStyle.Render(firstGhost)
 			}
 			cmdContent += ghostStyle.Render(restGhost)
-		} else if x.cursorOn {
+		} else if true {
 			cmdContent += lipgloss.NewStyle().Foreground(cursorColor).Render("|")
 		} else {
 			cmdContent += " "
@@ -382,16 +382,16 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" " + typedInput)
 		if rightFocused && inputGhost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(inputGhost)
-			if x.cursorOn {
+			if true {
 				inputDisplay += cursorStyle.Render(firstGhost)
 			} else {
 				inputDisplay += ghostStyle.Render(firstGhost)
 			}
 			inputDisplay += ghostStyle.Render(restGhost)
-		} else if rightFocused && x.cursorOn {
+		} else if rightFocused && true {
 			inputDisplay += inputCursorStyle.Render(inputCursorGlyph)
 		} else if rightFocused {
-			inputDisplay += " "
+			inputDisplay += inputCursorStyle.Render(" ")
 		}
 	}
 
@@ -414,7 +414,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	} else if inputLocked {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
-		if x.cursorOn {
+		if true {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
 				inputCursorStyle.Render(inputCursorGlyph) +
 				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E for emoji")
@@ -543,7 +543,7 @@ func (x m) renderSearchBox() string {
 		placeholder = "type to search users"
 	}
 	if searchFocused && x.sidebarTab == "contacts" && searchValue == "" {
-		if x.cursorOn {
+		if true {
 			searchLine += inputCursorStyle.Render(inputCursorGlyph)
 		} else {
 			searchLine += " "
@@ -557,7 +557,7 @@ func (x m) renderSearchBox() string {
 		searchLine += lipgloss.NewStyle().Foreground(text).Render(searchValue)
 	}
 	if searchFocused {
-		if x.cursorOn {
+		if true {
 			searchLine += inputCursorStyle.Render(inputCursorGlyph)
 		} else {
 			searchLine += " "
