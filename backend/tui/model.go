@@ -131,6 +131,9 @@ type m struct {
 	leftInput                                string
 	leftInputFocused                         bool
 	emojiPickerOpen                          bool
+	themePickerOpen                          bool
+	themePickerIdx                           int
+	themePickerOriginal                      string
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int

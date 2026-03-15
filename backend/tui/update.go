@@ -773,6 +773,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if x.status != "ready" {
 		return x, nil
 	}
+	if x.themePickerOpen {
+		return x.handleThemePicker(k)
+	}
 	if x.emojiPickerOpen {
 		return x.handleEmojiPicker(k)
 	}
@@ -1360,7 +1363,8 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		x.openEmojiPicker()
 		return nil, true
 	case txt == "/theme":
-		return x.setTopBar("Themes: /theme1tokyonight /theme2catppuccin /theme3monokai /theme4charcoal /theme5aurora /theme6sakura /theme7abyssal"), true
+		x.openThemePicker()
+		return nil, true
 	case txt == "/theme1tokyonight":
 		currentTheme = TokyoNight
 		currentConfig.ThemeName = "tokyonight"

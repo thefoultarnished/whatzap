@@ -159,7 +159,9 @@ func (x m) View() string {
 		inputH:       extraInputH,
 	}
 	var main string
-	if x.emojiPickerOpen {
+	if x.themePickerOpen {
+		main = x.renderThemePickerPane(rightW, mainH)
+	} else if x.emojiPickerOpen {
 		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
 		main = x.mainCache.result
