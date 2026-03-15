@@ -23,6 +23,7 @@ type mainCacheKey struct {
 	contactCount int
 	identityVer  int
 	spinnerFrame int
+	inputH       int
 }
 type renderCache struct {
 	key    mainCacheKey

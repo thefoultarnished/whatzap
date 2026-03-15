@@ -95,7 +95,35 @@ func (x m) View() string {
 	if x.replyTo != nil {
 		replyBarH = 1
 	}
-	side := x.renderSide(leftW, outerH-4-replyBarH)
+	typedInput := x.input + x.inputBuf
+
+	// Calculate extra input lines from text width directly (stable, no render dependency).
+	trimmedInput := strings.TrimSpace(typedInput)
+	isInputCmd := strings.HasPrefix(trimmedInput, "/")
+	inputRightFocused := x.mode == "chat" && !x.sidebarFocused && !x.leftInputFocused
+	inputLocked := x.chatInputLocked()
+	inputSendVisible := inputRightFocused && !inputLocked && !isInputCmd
+	inputSendW := 0
+	inputSendGap := 0
+	if inputSendVisible {
+		inputSendW = lipgloss.Width(lipgloss.NewStyle().Foreground(buttonInk).Background(brand).Bold(true).Render(" SEND "))
+		inputSendGap = 1
+	}
+	inputTextAreaW := max(1, rightW-1-inputSendW-inputSendGap)
+	inputContentW := len([]rune(typedInput)) + 2 // " " prefix + text + cursor
+	inputLines := max(1, (inputContentW+inputTextAreaW-1)/inputTextAreaW)
+	extraInputH := max(0, inputLines-1)
+
+	replyBar := x.renderReplyBar(contentW, rightW)
+
+	// Left column: sidebar + command box — height is independent of input wrapping.
+	sideH := outerH - 4 - replyBarH
+	side := x.renderSide(leftW, sideH)
+	cmdBox := x.renderCommandBox(leftW)
+	leftCol := lipgloss.JoinVertical(lipgloss.Left, side, cmdBox)
+
+	// Right column: main pane shrinks to accommodate multiline input.
+	mainH := max(1, outerH-4-replyBarH-extraInputH)
 
 	hasFlash := false
 	now := time.Now()
@@ -127,30 +155,30 @@ func (x m) View() string {
 		contactCount: len(x.contacts) + len(x.names),
 		identityVer:  x.identityVersion,
 		spinnerFrame: x.spinnerFrame,
+		inputH:       extraInputH,
 	}
 	var main string
 	if x.emojiPickerOpen {
-		main = x.renderEmojiPickerPane(rightW, outerH-4-replyBarH)
+		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
 		main = x.mainCache.result
 	} else {
-		main = x.renderMain(rightW, outerH-4-replyBarH)
+		main = x.renderMain(rightW, mainH)
 		if !hasFlash {
 			x.mainCache.key = cacheKey
 			x.mainCache.result = main
 		}
 	}
 
-	center := lipgloss.JoinHorizontal(lipgloss.Top, side, main)
-	typedInput := x.input + x.inputBuf
-	splitInputBar := lipgloss.JoinHorizontal(lipgloss.Bottom, x.renderCommandBox(leftW), x.renderChatInput(rightW, typedInput))
-
-	bodyParts := []string{center}
-	if replyBar := x.renderReplyBar(contentW, rightW); replyBar != "" {
-		bodyParts = append(bodyParts, replyBar)
+	chatInput := x.renderChatInput(rightW, typedInput)
+	rightParts := []string{main}
+	if replyBar != "" {
+		rightParts = append(rightParts, replyBar)
 	}
-	bodyParts = append(bodyParts, splitInputBar)
-	body := lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
+	rightParts = append(rightParts, chatInput)
+	rightCol := lipgloss.JoinVertical(lipgloss.Left, rightParts...)
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 	inner := lipgloss.JoinVertical(lipgloss.Left, head, body)
 	frame := lipgloss.NewStyle().
 		Width(outerW).
@@ -331,7 +359,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		inputGhost = chatInputGhost(typedInput)
 	}
 
-	showSend := hasVisibleText(typedInput) && !isCmd && rightFocused && !inputLocked
+	showSend := rightFocused && !inputLocked && !isCmd
 	sendBadge := ""
 	sendBadgeW := 0
 	if showSend {
@@ -339,7 +367,11 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		sendBadgeW = lipgloss.Width(sendBadge)
 	}
 
-	textAreaW := max(1, rightW-1-sendBadgeW)
+	sendGap := 0
+	if showSend {
+		sendGap = 1
+	}
+	textAreaW := max(1, rightW-1-sendBadgeW-sendGap)
 	var inputDisplay string
 	if inputLocked {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
@@ -391,7 +423,11 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		}
 	}
 
-	rightContent := lipgloss.NewStyle().Width(textAreaW).Render(inputDisplay) + sendBadge
+	textRendered := lipgloss.NewStyle().Width(textAreaW).Render(inputDisplay)
+	rightContent := textRendered
+	if showSend {
+		rightContent = lipgloss.JoinHorizontal(lipgloss.Top, textRendered, " "+sendBadge)
+	}
 	rightBorderColor := muted
 	if rightFocused && x.active != "" {
 		if _, ok := x.whitelist[num(x.active)]; ok {
