@@ -634,7 +634,7 @@ func chatMessageWrapWidth(w int, msg string) int {
 
 func wrapMessageLines(msgBody string, availableW int, fromMe bool, senderName string) []string {
 	if fromMe {
-		return strings.Split(wrapText(msgBody, availableW), "\n")
+		return strings.Split(wrapTextBalanced(msgBody, availableW), "\n")
 	}
 	prefixWidth := runeDisplayWidth(senderName + ": ")
 	return strings.Split(wrapTextWithPrefix(msgBody, availableW, prefixWidth), "\n")
@@ -974,16 +974,20 @@ func (x m) renderMain(w, h int) string {
 		}
 		outgoingBlockW := 0
 		outgoingBodyW := 0
+		timeSuffixPlain := "  " + timeStr + receiptText + " "
+		timeSuffixW := runeDisplayWidth(timeSuffixPlain)
 		if msg.Key.FromMe {
-			for i, ln := range wrapped {
+			for _, ln := range wrapped {
 				outgoingBodyW = max(outgoingBodyW, runeDisplayWidth(ln+" "))
-				lineMeasure := ln
-				if i == len(wrapped)-1 {
-					lineMeasure += "  " + timeStr + receiptText + " "
-				} else {
-					lineMeasure += " "
-				}
-				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(lineMeasure))
+			}
+			// Block must fit the widest text line OR the timestamp, whichever is wider.
+			lastLineW := runeDisplayWidth(wrapped[len(wrapped)-1] + " ")
+			if lastLineW+timeSuffixW <= max(1, w-2) {
+				// Timestamp fits on the last line.
+				outgoingBlockW = max(outgoingBodyW, lastLineW+timeSuffixW)
+			} else {
+				// Timestamp goes on its own line.
+				outgoingBlockW = max(outgoingBodyW, timeSuffixW)
 			}
 			if reactionLinePlain != "" {
 				outgoingBlockW = max(outgoingBlockW, runeDisplayWidth(reactionLinePlain))
@@ -1016,7 +1020,16 @@ func (x m) renderMain(w, h int) string {
 					Render(senderName+": "))
 			}
 			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg))
-			if i == len(wrapped)-1 {
+			if msg.Key.FromMe && i == len(wrapped)-1 {
+				// Float timestamp to the right of the last line if it fits,
+				// otherwise it goes on its own line below.
+				lastW := runeDisplayWidth(ln + " ")
+				if lastW+timeSuffixW <= outgoingBlockW {
+					pad := outgoingBlockW - lastW - timeSuffixW
+					lineParts = append(lineParts, bodyStyle.Render(strings.Repeat(" ", pad+1)))
+					lineParts = append(lineParts, timeStyled)
+				}
+			} else if !msg.Key.FromMe && i == len(wrapped)-1 {
 				lineParts = append(lineParts, timeStyled)
 			}
 			if msg.Key.FromMe {
@@ -1035,6 +1048,15 @@ func (x m) renderMain(w, h int) string {
 				lastBodyPlainW += runeDisplayWidth(senderName + ": ")
 			}
 			block = append(block, bodyContent)
+		}
+		// If timestamp didn't fit on the last line for outgoing, add it on its own line.
+		if msg.Key.FromMe {
+			lastW := runeDisplayWidth(wrapped[len(wrapped)-1] + " ")
+			if lastW+timeSuffixW > outgoingBlockW {
+				pad := max(0, outgoingBlockW-timeSuffixW)
+				timeLine := indent + strings.Repeat(" ", pad) + timeStyled + applyBodyBG(lipgloss.NewStyle().Foreground(bodyColor)).Render(" ")
+				block = append(block, timeLine)
+			}
 		}
 		if reactionLine != "" {
 			reactionOffset := max(0, lastBodyPlainW-runeDisplayWidth(reactionLinePlain))

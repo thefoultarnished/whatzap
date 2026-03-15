@@ -396,7 +396,7 @@ func messagePreviewForNotification(msg wireMsg) string {
 func setTerminalTitleCmd(title string) tea.Cmd {
 	clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
 	if clean == "" {
-		clean = "WhatZap"
+		clean = "⚡ WhatZap"
 	}
 	legacy := func() tea.Msg {
 		fmt.Printf("\033]0;%s\a", clean)
@@ -407,7 +407,7 @@ func setTerminalTitleCmd(title string) tea.Cmd {
 }
 
 func (x *m) refreshWindowTitleCmd() tea.Cmd {
-	title := "WhatZap"
+	title := "⚡ WhatZap"
 	names := x.unreadTitleNames(3)
 	if len(names) > 0 {
 		extra := x.unreadNamedChatCount() - len(names)

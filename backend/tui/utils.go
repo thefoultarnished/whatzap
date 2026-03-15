@@ -256,6 +256,41 @@ func wrapText(s string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// wrapTextBalanced wraps text so lines are roughly equal length, avoiding orphan words.
+// It uses greedy wrapping first, then tries narrower widths until lines are balanced.
+func wrapTextBalanced(s string, width int) string {
+	if width < 4 {
+		return s
+	}
+	greedy := wrapText(s, width)
+	lines := strings.Split(greedy, "\n")
+	if len(lines) <= 1 {
+		return greedy
+	}
+	// Find the narrowest width that keeps the same number of lines.
+	// Binary search between the longest word width and the greedy max width.
+	targetLines := len(lines)
+	longestWord := 0
+	for _, w := range strings.Fields(s) {
+		if ww := runeDisplayWidth(w); ww > longestWord {
+			longestWord = ww
+		}
+	}
+	lo, hi := longestWord, width
+	best := width
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		attempt := strings.Split(wrapText(s, mid), "\n")
+		if len(attempt) <= targetLines {
+			best = mid
+			hi = mid - 1
+		} else {
+			lo = mid + 1
+		}
+	}
+	return wrapText(s, best)
+}
+
 func wrapTextWithPrefix(s string, width, prefixWidth int) string {
 	if prefixWidth <= 0 {
 		return wrapText(s, width)
