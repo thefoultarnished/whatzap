@@ -1,6 +1,46 @@
 package main
 
 var (
+	// Linen — warm off-white bg, pastel muted palette, soft and modern
+	Linen = Theme{
+		Brand:                 "#7a9e9f", // muted teal-sage
+		Accent:                "#7a95b8", // dusty cornflower
+		Purple:                "#9e8fbd", // dusty lavender
+		Amber:                 "#c4986a", // muted caramel
+		Red:                   "#c47878", // dusty rose
+		Muted:                 "#b0a89e", // warm gray
+		Text:                  "#3a3530", // warm near-black
+		ImageTag:              "#c47878", // dusty rose
+		VideoTag:              "#7a95b8", // cornflower
+		AudioTag:              "#c4986a", // caramel
+		FileTag:               "#7aab8a", // sage green
+		StickerTag:            "#9e8fbd", // lavender
+		ContactTag:            "#6aadb2", // muted teal
+		PollTag:               "#c4986a", // caramel
+		LocationTag:           "#7a8fc4", // periwinkle
+		AnomalyTag:            "#c47878", // dusty rose
+		SentText:              "#2d4a6b", // dark slate blue — sent messages
+		ReceivedText:          "#3a3530", // warm dark — received
+		SentName:              "#7a9e9f", // brand teal — "me"
+		ReceivedName:          "#9e8fbd", // dusty lavender — "them"
+		QuotedSentText:        "#8a9aaa", // muted blue-gray
+		QuotedReceivedText:    "#aaa49e", // muted warm gray
+		BadgeInk:              "#f9f7f4",
+		ButtonInk:             "#f9f7f4",
+		TagInk:                "#f9f7f4",
+		Cursor:                "#7a95b8", // dusty cornflower cursor
+		QRLight:               "#f9f7f4",
+		QRDark:                "#3a3530",
+		ShortcutActive:        "#e4eaf2", // soft blue-gray
+		SidebarActiveBg:       "#e4ecf4", // light blue tint
+		SidebarActiveUnreadBg: "#f5ede0", // soft warm amber tint
+		ReplyPreviewBg:        "#edf0f6",
+		MessageSelectedBg:     "#e8edf5",
+		MediaTokenBg:          "#7a95b8", // dusty cornflower
+		MediaTokenPulseBg:     "#a8bdd4", // lighter cornflower
+		Background:            "#f9f7f4", // warm linen off-white
+	}
+
 	// TokyoNight — deep navy #1a1b26 bg, cool blue-purple chrome, warm green/cyan accents
 	TokyoNight = Theme{
 		Brand:                 "#9ece6a", // official Tokyo Night green
@@ -38,6 +78,7 @@ var (
 		MessageSelectedBg:     "#232845", // subtle navy highlight
 		MediaTokenBg:          "#f7768e", // theme's own red — more cohesive
 		MediaTokenPulseBg:     "#ff9eb5", // soft red-pink pulse
+		Background:            "#1a1b26", // Tokyo Night canonical bg
 	}
 
 	// Catppuccin Mocha — official Catppuccin Mocha palette, #1e1e2e bg
@@ -77,6 +118,7 @@ var (
 		MessageSelectedBg:     "#252040", // deep mauve selection
 		MediaTokenBg:          "#f38ba8", // Mocha Red
 		MediaTokenPulseBg:     "#f5bde6", // Mocha Pink — soft pulse
+		Background:            "#1e1e2e",
 	}
 
 	// Monokai — classic #272822 bg, vivid 6-color palette
@@ -116,6 +158,7 @@ var (
 		MessageSelectedBg:     "#2d2910", // very dark warm highlight
 		MediaTokenBg:          "#f92672", // Monokai red
 		MediaTokenPulseBg:     "#ff6b9d", // soft pink pulse
+		Background:            "#272822",
 	}
 
 	// Charcoal — pure monochrome, dark #1c1c1c bg, deliberate luminance steps
@@ -155,6 +198,7 @@ var (
 		MessageSelectedBg:     "#383838",
 		MediaTokenBg:          "#c8c8c8",
 		MediaTokenPulseBg:     "#e0e0e0",
+		Background:            "#1c1c1c",
 	}
 
 	// Aurora — Northern Lights on deep night sky, vivid electric palette across the spectrum
@@ -194,6 +238,7 @@ var (
 		MessageSelectedBg:     "#14192a", // very dark navy
 		MediaTokenBg:          "#ff79c6", // aurora pink
 		MediaTokenPulseBg:     "#ffb3e0", // soft pink pulse
+		Background:            "#0d1117",
 	}
 
 	// Sakura — Cherry blossom, dark plum bg, pink/rose/lavender palette
@@ -233,6 +278,7 @@ var (
 		MessageSelectedBg:     "#351430",  // deep burgundy selection
 		MediaTokenBg:          "#db2777",
 		MediaTokenPulseBg:     "#f472b6",
+		Background:            "#1a0d14",
 	}
 
 	// Abyssal — deep ocean bioluminescence, near-black #020810 bg
@@ -272,5 +318,6 @@ var (
 		MessageSelectedBg:     "#091c28",
 		MediaTokenBg:          "#0077aa",
 		MediaTokenPulseBg:     "#00cfff",
+		Background:            "#020810",
 	}
 )

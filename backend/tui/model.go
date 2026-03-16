@@ -48,6 +48,7 @@ type Theme struct {
 	SidebarActiveBg, SidebarActiveUnreadBg         string
 	ReplyPreviewBg, MessageSelectedBg              string
 	MediaTokenBg, MediaTokenPulseBg                string
+	Background                                     string
 }
 
 var currentTheme Theme

@@ -393,6 +393,14 @@ func messagePreviewForNotification(msg wireMsg) string {
 	return body
 }
 
+func setTerminalBg(color string) {
+	if color == "" {
+		fmt.Printf("\033]111\a") // reset to terminal default
+	} else {
+		fmt.Printf("\033]11;%s\a", color)
+	}
+}
+
 func setTerminalTitleCmd(title string) tea.Cmd {
 	clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
 	if clean == "" {
@@ -1365,49 +1373,56 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 	case txt == "/theme":
 		x.openThemePicker()
 		return nil, true
-	case txt == "/theme1tokyonight":
+	case txt == "/theme1linen":
+		currentTheme = Linen
+		currentConfig.ThemeName = "linen"
+		saveConfig()
+		rehashStyles()
+		x.mainCache.result = ""
+		return x.setTopBar("Theme: Linen"), true
+	case txt == "/theme2tokyonight":
 		currentTheme = TokyoNight
 		currentConfig.ThemeName = "tokyonight"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Tokyo Night"), true
-	case txt == "/theme2catppuccin":
+	case txt == "/theme3catppuccin":
 		currentTheme = Catppuccin
 		currentConfig.ThemeName = "catppuccin"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Catppuccin"), true
-	case txt == "/theme3monokai":
+	case txt == "/theme4monokai":
 		currentTheme = Monokai
 		currentConfig.ThemeName = "monokai"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Monokai"), true
-	case txt == "/theme4charcoal":
+	case txt == "/theme5charcoal":
 		currentTheme = Charcoal
 		currentConfig.ThemeName = "charcoal"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Charcoal"), true
-	case txt == "/theme5aurora":
+	case txt == "/theme6aurora":
 		currentTheme = Aurora
 		currentConfig.ThemeName = "aurora"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Aurora"), true
-	case txt == "/theme6sakura":
+	case txt == "/theme7sakura":
 		currentTheme = Sakura
 		currentConfig.ThemeName = "sakura"
 		saveConfig()
 		rehashStyles()
 		x.mainCache.result = ""
 		return x.setTopBar("Theme: Sakura"), true
-	case txt == "/theme7abyssal":
+	case txt == "/theme8abyssal":
 		currentTheme = Abyssal
 		currentConfig.ThemeName = "abyssal"
 		saveConfig()
@@ -1532,6 +1547,8 @@ func rehashStyles() {
 	pollTagStyle = lipgloss.NewStyle().Foreground(tagInk).Background(pollTag).Bold(true)
 	locationTagStyle = lipgloss.NewStyle().Foreground(tagInk).Background(locationTag).Bold(true)
 	anomalyTagStyle = lipgloss.NewStyle().Foreground(tagInk).Background(anomalyTag).Bold(true)
+
+	setTerminalBg(currentTheme.Background)
 }
 
 func (x m) sidebarItems() []chat {

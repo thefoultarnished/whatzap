@@ -598,7 +598,17 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 		rowWidth := max(1, w-2)
 		nameWidth := max(1, rowWidth-1)
 
-		nameText := fmt.Sprintf("%d. %s", i+1, x.name(c))
+		n := i + 1
+		var numLabel string
+		switch {
+		case n >= 100:
+			numLabel = fmt.Sprintf("%d ", n)
+		case n >= 10:
+			numLabel = fmt.Sprintf("%d. ", n)
+		default:
+			numLabel = fmt.Sprintf("0%d. ", n)
+		}
+		nameText := numLabel + x.name(c)
 		if highlighted && graphemeCount(nameText) > nameWidth {
 			offset := x.sidebarMarqueeOffset
 			maxOffset := graphemeCount(nameText) - nameWidth

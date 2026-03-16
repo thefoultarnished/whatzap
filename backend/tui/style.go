@@ -63,7 +63,7 @@ var (
 	spinnerFrames  = []string{"✶", "✸", "✹", "✺", "✹", "✷"}
 	systemCommands = []string{
 		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
-		"/theme", "/theme1tokyonight", "/theme2catppuccin", "/theme3monokai", "/theme4charcoal", "/theme5aurora", "/theme6sakura", "/theme7abyssal",
+		"/theme", "/theme1linen", "/theme2tokyonight", "/theme3catppuccin", "/theme4monokai", "/theme5charcoal", "/theme6aurora", "/theme7sakura", "/theme8abyssal",
 		"/mouseon", "/mouseoff",
 		"/sound1", "/sound2", "/sound3", "/sound4", "/sound5", "/soundon", "/soundoff",
 	}

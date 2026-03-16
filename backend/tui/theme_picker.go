@@ -13,6 +13,7 @@ var themeList = []struct {
 	displayName string
 	theme       Theme
 }{
+	{"linen", "Linen", Linen},
 	{"tokyonight", "Tokyo Night", TokyoNight},
 	{"catppuccin", "Catppuccin", Catppuccin},
 	{"monokai", "Monokai", Monokai},
@@ -78,13 +79,19 @@ func (x m) handleThemePicker(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (x m) renderThemePickerPane(w, h int) string {
-	pickerW := min(40, max(30, w/2))
+	pickerW := min(54, max(44, w/2))
 
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
 	hintStyle := lipgloss.NewStyle().Foreground(muted)
 	activeStyle := lipgloss.NewStyle().Foreground(brand).Bold(true)
 	inactiveStyle := lipgloss.NewStyle().Foreground(text)
 	divStyle := lipgloss.NewStyle().Foreground(muted)
+	keyStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
+
+	hint := hintStyle.Render("  ") +
+		keyStyle.Render("↑↓") + hintStyle.Render(" navigate  ") +
+		keyStyle.Render("Enter") + hintStyle.Render(" confirm  ") +
+		keyStyle.Render("Esc") + hintStyle.Render(" cancel")
 
 	lines := []string{}
 	lines = append(lines, titleStyle.Render("  Select Theme"))
@@ -97,7 +104,7 @@ func (x m) renderThemePickerPane(w, h int) string {
 		}
 	}
 	lines = append(lines, divStyle.Render("  "+strings.Repeat("─", pickerW-4)))
-	lines = append(lines, hintStyle.Render("  ↑↓ navigate · Enter confirm · Esc cancel"))
+	lines = append(lines, hint)
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -107,7 +114,6 @@ func (x m) renderThemePickerPane(w, h int) string {
 
 	return lipgloss.NewStyle().
 		Width(w).
-		Height(h).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(box)
+		Height(max(1, h)).
+		Render(lipgloss.Place(w, max(1, h), lipgloss.Center, lipgloss.Center, box))
 }
