@@ -32,6 +32,29 @@ func truncate(s string, n int) string {
 	return string(r[:n-3]) + "..."
 }
 
+func truncateDisplayWidth(s string, width int) string {
+	s = strings.TrimSpace(s)
+	if width <= 0 {
+		return ""
+	}
+	if runeDisplayWidth(s) <= width {
+		return s
+	}
+	if width <= 3 {
+		return strings.Repeat(".", width)
+	}
+	limit := width - 3
+	var b strings.Builder
+	for _, ch := range s {
+		next := string(ch)
+		if runeDisplayWidth(b.String())+runeDisplayWidth(next) > limit {
+			break
+		}
+		b.WriteString(next)
+	}
+	return b.String() + "..."
+}
+
 func whatzapDataRoot() string {
 	if override := strings.TrimSpace(os.Getenv("WHATZAP_DATA_DIR")); override != "" {
 		return filepath.Clean(override)

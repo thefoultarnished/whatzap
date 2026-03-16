@@ -451,28 +451,32 @@ func (x m) renderReplyBar(contentW, rightW int) string {
 	if displayReplyTo == nil {
 		return ""
 	}
-	leftW := contentW - rightW
+	_ = contentW
 
 	rSender := x.senderNameForMsg(*displayReplyTo)
-	rText := renderMessageBody(displayReplyTo.Message)
-	maxText := rightW - 20
-	if maxText < 20 {
-		maxText = 20
+	if strings.TrimSpace(rSender) == "" {
+		rSender = num(x.senderIDForMsg(*displayReplyTo))
 	}
-	if len([]rune(rText)) > maxText {
-		rText = string([]rune(rText)[:maxText]) + "..."
-	}
+	rText := strings.ReplaceAll(renderMessageBody(displayReplyTo.Message), "\n", " ")
 	quoteTextColor := quotedReceivedText
 	nameColor := receivedName
 	if displayReplyTo.Key.FromMe {
 		quoteTextColor = quotedSentText
 		nameColor = sentName
 	}
+	prefixText := " â•­â”€ "
+	senderText := rSender + ": "
+	suffixText := "  Esc cancel"
+	textWidth := rightW - runeDisplayWidth(prefixText) - runeDisplayWidth(senderText) - runeDisplayWidth(suffixText)
+	if textWidth < 0 {
+		textWidth = 0
+	}
+	rText = truncateDisplayWidth(rText, textWidth)
 	bar := lipgloss.NewStyle().Foreground(accent).Render(" ╭─ ") +
-		lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(rSender+": ") +
+		lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(senderText) +
 		lipgloss.NewStyle().Foreground(quoteTextColor).Render(rText) +
-		lipgloss.NewStyle().Foreground(muted).Render("  Esc cancel")
-	return strings.Repeat(" ", leftW) + lipgloss.NewStyle().Width(rightW).Render(bar)
+		lipgloss.NewStyle().Foreground(muted).Render(suffixText)
+	return lipgloss.NewStyle().Width(rightW).Render(bar)
 }
 
 func (x m) renderSide(w, h int) string {
@@ -625,12 +629,13 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 		if highlighted {
 			nameText = strings.Repeat(" ", x.sidebarHighlightInset) + nameText
 		}
-		line := rowBase.Render(padRight(nameText, nameWidth))
+		content := padRight(nameText, nameWidth)
 		if hasUnread {
-			line += rowBase.Copy().Foreground(amber).Render("●")
+			content += lipgloss.NewStyle().Foreground(amber).Render("\u25cf")
 		} else {
-			line += rowBase.Render(" ")
+			content += " "
 		}
+		line := rowBase.Width(rowWidth).Render(content)
 		lines = append(lines, line)
 	}
 	return lines

@@ -1097,21 +1097,22 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-
 	if a.client.Store != nil && a.client.Store.AppState != nil {
-		a.safeFetchAppState(ctx, appstate.WAPatchCriticalBlock)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegularLow)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegularHigh)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegular)
+		appStateCtx, appStateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		a.safeFetchAppState(appStateCtx, appstate.WAPatchCriticalBlock)
+		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegularLow)
+		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegularHigh)
+		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegular)
+		appStateCancel()
 	}
 	if a.client.Store == nil || a.client.Store.Contacts == nil {
 		writeErr(w, http.StatusInternalServerError, "contacts store unavailable")
 		return
 	}
 
-	allContacts, err := a.client.Store.Contacts.GetAllContacts(ctx)
+	storeCtx, storeCancel := context.WithTimeout(context.Background(), 12*time.Second)
+	allContacts, err := a.client.Store.Contacts.GetAllContacts(storeCtx)
+	storeCancel()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1151,7 +1152,7 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 		oldChat := a.state.Chats[cid]
 		chat := oldChat
 		chat.ID = cid
-		if name != "" && chat.Name == "" {
+		if name != "" {
 			chat.Name = name
 		}
 		a.state.Chats[cid] = chat
@@ -1184,6 +1185,7 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 
 	enriched := 0
 	queried := 0
+	lookupErrors := 0
 	if len(unresolved) > 0 {
 		seen := map[string]struct{}{}
 		unique := make([]types.JID, 0, len(unresolved))
@@ -1204,8 +1206,11 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 				end = len(unique)
 			}
 			batch := unique[i:end]
-			infoMap, err := a.client.GetUserInfo(ctx, batch)
+			lookupCtx, lookupCancel := context.WithTimeout(context.Background(), 8*time.Second)
+			infoMap, err := a.client.GetUserInfo(lookupCtx, batch)
+			lookupCancel()
 			if err != nil {
+				lookupErrors++
 				continue
 			}
 			a.mu.Lock()
@@ -1224,11 +1229,11 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 					ct.ID = cid
 				}
 				changed := false
-				if strings.TrimSpace(ct.Notify) == "" {
+				if strings.TrimSpace(name) != "" && ct.Notify != name {
 					ct.Notify = name
 					changed = true
 				}
-				if strings.TrimSpace(ct.Name) == "" {
+				if strings.TrimSpace(name) != "" && ct.Name != name {
 					ct.Name = name
 					changed = true
 				}
@@ -1238,7 +1243,7 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 				if ch.ID == "" {
 					ch.ID = cid
 				}
-				if strings.TrimSpace(ch.Name) == "" {
+				if strings.TrimSpace(name) != "" && ch.Name != name {
 					ch.Name = name
 					changed = true
 				}
@@ -1273,12 +1278,13 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 	a.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"total":      total,
-		"updated":    updated,
-		"enriched":   enriched,
-		"queried":    queried,
-		"unresolved": unresolvedAfter,
+		"ok":           true,
+		"total":        total,
+		"updated":      updated,
+		"enriched":     enriched,
+		"queried":      queried,
+		"lookupErrors": lookupErrors,
+		"unresolved":   unresolvedAfter,
 	})
 }
 

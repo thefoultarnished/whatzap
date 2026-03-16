@@ -172,6 +172,8 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case topBarSetMsg:
 		return x, x.setTopBar(v.msg)
+	case syncContactsDoneMsg:
+		return x, tea.Batch(x.setTopBar(v.msg), getChats(x.client, x.baseURL), getContacts(x.client, x.baseURL))
 	case syncGroupsDoneMsg:
 		return x, tea.Batch(x.setTopBar(v.msg), getChats(x.client, x.baseURL))
 	case cursorBlinkMsg:
@@ -509,7 +511,6 @@ func (x *m) shouldNotifyIncoming(wm wireMsg) bool {
 	x.lastNotifyAt[wm.Key.RemoteJID] = now
 	return true
 }
-
 
 func preferredContact(a, b contact) contact {
 	score := func(c contact) int {

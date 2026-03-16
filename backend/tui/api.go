@@ -528,16 +528,21 @@ func apiTokenFromURL(base string) string {
 func syncContacts(c *http.Client, base string) tea.Cmd {
 	return postEmpty(c, base+"/sync/contacts", func(raw []byte) tea.Msg {
 		var out struct {
-			Updated    int `json:"updated"`
-			Enriched   int `json:"enriched"`
-			Queried    int `json:"queried"`
-			Unresolved int `json:"unresolved"`
-			Total      int `json:"total"`
+			Updated      int `json:"updated"`
+			Enriched     int `json:"enriched"`
+			Queried      int `json:"queried"`
+			LookupErrors int `json:"lookupErrors"`
+			Unresolved   int `json:"unresolved"`
+			Total        int `json:"total"`
 		}
 		if err := json.Unmarshal(raw, &out); err != nil {
-			return topBarSetMsg{msg: "Contacts sync complete"}
+			return syncContactsDoneMsg{msg: "Contacts sync complete"}
 		}
-		return topBarSetMsg{msg: fmt.Sprintf("Sync: local %d, server %d/%d, unresolved %d", out.Updated, out.Enriched, out.Queried, out.Unresolved)}
+		msg := fmt.Sprintf("Sync: local %d, server %d/%d, unresolved %d", out.Updated, out.Enriched, out.Queried, out.Unresolved)
+		if out.LookupErrors > 0 {
+			msg += fmt.Sprintf(", server lookup timed out %d time(s)", out.LookupErrors)
+		}
+		return syncContactsDoneMsg{msg: msg}
 	})
 }
 

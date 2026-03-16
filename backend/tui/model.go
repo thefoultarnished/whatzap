@@ -230,6 +230,9 @@ type callMsg struct {
 	Media    string `json:"media"`
 	Reason   string `json:"reason"`
 }
+type syncContactsDoneMsg struct {
+	msg string
+}
 type syncGroupsDoneMsg struct {
 	msg string
 }

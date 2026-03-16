@@ -213,6 +213,81 @@ func TestRenderMainQuoteUsesReceivedColorsWhenQuotingOtherSender(t *testing.T) {
 	}
 }
 
+func TestRenderReplyBarTruncatesToPaneWidth(t *testing.T) {
+	currentTheme = Monokai
+	rehashStyles()
+
+	reply := &wireMsg{
+		Message: map[string]any{
+			"conversation": "Are you planning to attend tomorrow? The first lecture?",
+		},
+	}
+	reply.Key.ID = "q1"
+	reply.Key.RemoteJID = "15551230001@s.whatsapp.net"
+
+	model := m{
+		replyTo: reply,
+		contacts: map[string]contact{
+			"15551230001@s.whatsapp.net": {ID: "15551230001@s.whatsapp.net", Notify: "Shadu"},
+		},
+		contactsByNumber: map[string]contact{
+			"15551230001": {ID: "15551230001@s.whatsapp.net", Notify: "Shadu"},
+		},
+	}
+
+	rendered := model.renderReplyBar(140, 32)
+	if lipgloss.Width(rendered) != 32 {
+		t.Fatalf("reply bar width = %d, want 32, rendered=%q", lipgloss.Width(rendered), rendered)
+	}
+	if !strings.Contains(rendered, "Esc cancel") {
+		t.Fatalf("reply bar missing cancel hint: %q", rendered)
+	}
+	if !strings.Contains(rendered, "...") {
+		t.Fatalf("reply bar should truncate long quoted text: %q", rendered)
+	}
+}
+
+func TestViewReplyBarDoesNotExpandPastFrameWidth(t *testing.T) {
+	currentTheme = Monokai
+	rehashStyles()
+
+	reply := &wireMsg{
+		Message: map[string]any{
+			"conversation": "Are you planning to attend tomorrow? The first lecture?",
+		},
+	}
+	reply.Key.ID = "q2"
+	reply.Key.RemoteJID = "15551230001@s.whatsapp.net"
+
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		w:         120,
+		h:         8,
+		replyTo:   reply,
+		whitelist: map[string]string{"15551230001": "Shadu"},
+		contacts: map[string]contact{
+			"15551230001@s.whatsapp.net": {ID: "15551230001@s.whatsapp.net", Notify: "Shadu"},
+		},
+		contactsByNumber: map[string]contact{
+			"15551230001": {ID: "15551230001@s.whatsapp.net", Notify: "Shadu"},
+		},
+		msgs: map[string][]wireMsg{
+			"15551230001@s.whatsapp.net": {},
+		},
+		sidebarCache: &sidebarCache{},
+		mainCache:    &renderCache{},
+	}
+
+	rendered := model.View()
+	for _, line := range strings.Split(rendered, "\n") {
+		if lipgloss.Width(line) > model.w {
+			t.Fatalf("view line width = %d, want <= %d, line=%q", lipgloss.Width(line), model.w, line)
+		}
+	}
+}
+
 func TestRenderMainOutgoingReactionKeepsMessageIndentedRight(t *testing.T) {
 	currentTheme = Monokai
 	rehashStyles()
@@ -314,6 +389,9 @@ func TestRenderUserListHighlightedNameUsesMarqueeOffset(t *testing.T) {
 	}
 	if strings.Contains(lines[0], "1. Very Long Highlighted") {
 		t.Fatalf("highlighted row ignored marquee offset: %q", lines[0])
+	}
+	if got := lipgloss.Width(lines[0]); got != 28 {
+		t.Fatalf("highlighted row width = %d, want 28", got)
 	}
 }
 
