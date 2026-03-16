@@ -217,6 +217,10 @@ type mediaDownloadMsg struct {
 	path string
 	err  error
 }
+type fileOpenMsg struct {
+	path string
+	err  error
+}
 type receiptMsg struct {
 	ChatID        string   `json:"chatId"`
 	MessageIDs    []string `json:"messageIds"`

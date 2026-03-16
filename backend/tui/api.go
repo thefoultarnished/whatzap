@@ -479,8 +479,10 @@ func openFile(path string) tea.Cmd {
 		default:
 			cmd = exec.Command("xdg-open", path)
 		}
-		_ = cmd.Start()
-		return nil
+		if err := cmd.Start(); err != nil {
+			return fileOpenMsg{path: path, err: err}
+		}
+		return fileOpenMsg{path: path}
 	}
 }
 

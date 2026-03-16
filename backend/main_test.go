@@ -59,7 +59,7 @@ func newTestApp(t *testing.T) *App {
 		db:        db,
 		cachePath: cachePath,
 		apiToken:  "test-api-token",
-		wsClients: map[*websocket.Conn]struct{}{},
+		wsClients: map[*websocket.Conn]*wsClient{},
 		state: PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
@@ -816,6 +816,48 @@ func TestWhitelistRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWhitelistHandlersRejectDuringShutdown(t *testing.T) {
+	app := newTestApp(t)
+	app.mu.Lock()
+	app.shuttingDown = true
+	app.mu.Unlock()
+
+	tests := []struct {
+		name string
+		req  *http.Request
+		run  func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "get whitelist",
+			req:  httptest.NewRequest(http.MethodGet, "/whitelist", nil),
+			run:  app.handleGetWhitelist,
+		},
+		{
+			name: "set whitelist",
+			req:  httptest.NewRequest(http.MethodPost, "/whitelist/set", bytes.NewBufferString(`{"phone":"15551230001","allowed":1}`)),
+			run:  app.handleSetWhitelist,
+		},
+		{
+			name: "set name",
+			req:  httptest.NewRequest(http.MethodPost, "/names/set", bytes.NewBufferString(`{"phone":"15551230001","name":"Alex"}`)),
+			run:  app.handleSetName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tt.run(rec, tt.req)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "permission store unavailable") {
+				t.Fatalf("unexpected body: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
 // Route validation.
 func TestCoreRouteValidation(t *testing.T) {
 	app := newTestApp(t)
@@ -907,6 +949,11 @@ func TestHandlersRequiringWhatsAppConnectionReturnConflictWhenDisconnected(t *te
 			name: "profile picture",
 			req:  httptest.NewRequest(http.MethodGet, "/profile-picture?jid=15551230001@s.whatsapp.net", nil),
 			run:  app.handleProfilePicture,
+		},
+		{
+			name: "mark read",
+			req:  httptest.NewRequest(http.MethodPost, "/messages/read", bytes.NewBufferString(`{"chatId":"15551230001@s.whatsapp.net"}`)),
+			run:  app.handleMarkRead,
 		},
 		{
 			name: "media download",

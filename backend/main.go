@@ -95,6 +95,21 @@ type PersistedState struct {
 	Messages map[string][]WireMessage `json:"messages"`
 }
 
+type wsClient struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
+func (c *wsClient) write(data []byte) error {
+	if c == nil || c.conn == nil {
+		return fmt.Errorf("websocket client unavailable")
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
 type App struct {
 	mu sync.RWMutex
 
@@ -111,7 +126,7 @@ type App struct {
 	apiToken string
 
 	wsMu      sync.Mutex
-	wsClients map[*websocket.Conn]struct{}
+	wsClients map[*websocket.Conn]*wsClient
 
 	needsBootstrapSync bool
 	historySyncing     bool
@@ -266,7 +281,7 @@ func NewApp() (*App, error) {
 		cacheDir:  cacheDir,
 		cachePath: cachePath,
 		apiToken:  apiToken,
-		wsClients: map[*websocket.Conn]struct{}{},
+		wsClients: map[*websocket.Conn]*wsClient{},
 		state: PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
@@ -888,29 +903,26 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	client := &wsClient{conn: conn}
 	a.mu.RLock()
 	connected := a.connected
 	a.mu.RUnlock()
-	a.wsMu.Lock()
 	if connected {
 		if data, err := json.Marshal(EventEnvelope{Type: "ready"}); err == nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				a.wsMu.Unlock()
+			if err := client.write(data); err != nil {
 				_ = conn.Close()
 				return
 			}
 		}
 		if data, err := json.Marshal(EventEnvelope{Type: "chats:loaded"}); err == nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				a.wsMu.Unlock()
+			if err := client.write(data); err != nil {
 				_ = conn.Close()
 				return
 			}
 		}
 	}
-	a.wsClients[conn] = struct{}{}
+	a.wsMu.Lock()
+	a.wsClients[conn] = client
 	a.wsMu.Unlock()
 
 	go func() {
@@ -934,12 +946,17 @@ func (a *App) broadcast(evt EventEnvelope) {
 		return
 	}
 	a.wsMu.Lock()
-	defer a.wsMu.Unlock()
-	for c := range a.wsClients {
-		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
-			_ = c.Close()
-			delete(a.wsClients, c)
+	clients := make([]*wsClient, 0, len(a.wsClients))
+	for _, client := range a.wsClients {
+		clients = append(clients, client)
+	}
+	a.wsMu.Unlock()
+	for _, client := range clients {
+		if err := client.write(data); err != nil {
+			a.wsMu.Lock()
+			delete(a.wsClients, client.conn)
+			a.wsMu.Unlock()
+			_ = client.conn.Close()
 		}
 	}
 }
@@ -1549,6 +1566,9 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !a.requireConnectedClient(w) {
+		return
+	}
 	var req struct {
 		ChatID string `json:"chatId"`
 	}
@@ -1566,29 +1586,30 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	chat := a.state.Chats[req.ChatID]
 	chat.ID = req.ChatID
-	chat.UnreadCount = 0
-	a.state.Chats[req.ChatID] = chat
-	// gather unread messages to actually tell WhatsApp server we read them
+	unreadToMark := chat.UnreadCount
 	msgs := a.state.Messages[req.ChatID]
 	senderToIDs := make(map[string][]types.MessageID)
-	for _, msg := range msgs {
-		if !msg.Key.FromMe {
-			sender := msg.Key.Participant
-			if sender == "" {
-				sender = msg.Key.RemoteJID
-			}
-			senderToIDs[sender] = append(senderToIDs[sender], types.MessageID(msg.Key.ID))
+	for i := len(msgs) - 1; i >= 0 && unreadToMark > 0; i-- {
+		msg := msgs[i]
+		if msg.Key.FromMe || msg.Key.ID == "" {
+			continue
 		}
+		sender := msg.Key.Participant
+		if sender == "" {
+			sender = msg.Key.RemoteJID
+		}
+		senderToIDs[sender] = append(senderToIDs[sender], types.MessageID(msg.Key.ID))
+		unreadToMark--
 	}
+	chat.UnreadCount = 0
+	a.state.Chats[req.ChatID] = chat
 	a.mu.Unlock()
 
 	// actually inform WhatsApp server!
-	if a.client != nil {
-		chatJID, _ := types.ParseJID(req.ChatID)
-		for senderStr, ids := range senderToIDs {
-			senderJID, _ := types.ParseJID(senderStr)
-			_ = a.client.MarkRead(context.Background(), ids, time.Now(), chatJID, senderJID)
-		}
+	chatJID, _ := types.ParseJID(req.ChatID)
+	for senderStr, ids := range senderToIDs {
+		senderJID, _ := types.ParseJID(senderStr)
+		_ = a.client.MarkRead(context.Background(), ids, time.Now(), chatJID, senderJID)
 	}
 
 	a.persistState()
@@ -2382,8 +2403,25 @@ func (a *App) upsertPermission(phone, name string) {
 	)
 }
 
+func (a *App) permissionDB() (*sql.DB, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.shuttingDown || a.db == nil {
+		return nil, false
+	}
+	return a.db, true
+}
+
 func (a *App) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(`SELECT phone, name, allowed FROM chat_permissions ORDER BY phone`)
+	db, ok := a.permissionDB()
+	if !ok {
+		writeErr(w, http.StatusConflict, "permission store unavailable")
+		return
+	}
+	rows, err := db.Query(`SELECT phone, name, allowed FROM chat_permissions ORDER BY phone`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -2409,6 +2447,11 @@ func (a *App) handleSetWhitelist(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	db, ok := a.permissionDB()
+	if !ok {
+		writeErr(w, http.StatusConflict, "permission store unavailable")
+		return
+	}
 	var req struct {
 		Phone   string `json:"phone"`
 		Name    string `json:"name"`
@@ -2422,7 +2465,7 @@ func (a *App) handleSetWhitelist(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "phone is required")
 		return
 	}
-	_, err := a.db.Exec(
+	_, err := db.Exec(
 		`INSERT OR REPLACE INTO chat_permissions (phone, name, allowed) VALUES (?, ?, ?)`,
 		req.Phone, req.Name, req.Allowed,
 	)
@@ -2438,6 +2481,11 @@ func (a *App) handleSetName(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	db, ok := a.permissionDB()
+	if !ok {
+		writeErr(w, http.StatusConflict, "permission store unavailable")
+		return
+	}
 	var req struct {
 		Phone string `json:"phone"`
 		Name  string `json:"name"`
@@ -2451,7 +2499,7 @@ func (a *App) handleSetName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// create row if not exists (allowed stays 0), then only update name
-	_, err := a.db.Exec(
+	_, err := db.Exec(
 		`INSERT INTO chat_permissions (phone, name, allowed) VALUES (?, ?, 0)
 		 ON CONFLICT(phone) DO UPDATE SET name=excluded.name`,
 		req.Phone, req.Name,

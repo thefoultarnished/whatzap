@@ -332,7 +332,12 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.err != nil {
 			return x, x.setTopBar(v.err.Error())
 		}
-		return x, tea.Batch(x.setTopBar("Opened: "+filepath.Base(v.path)), openFile(v.path))
+		return x, openFile(v.path)
+	case fileOpenMsg:
+		if v.err != nil {
+			return x, x.setTopBar("Open failed: " + v.err.Error())
+		}
+		return x, x.setTopBar("Opened: " + filepath.Base(v.path))
 	case flushInputMsg:
 		x.input += x.inputBuf
 		x.inputBuf = ""

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -140,6 +141,22 @@ func TestRenderMainIncomingMessageKeepsBodyColorAfterPrefix(t *testing.T) {
 	}
 	if !strings.Contains(rendered, body) {
 		t.Fatalf("rendered message missing received-text styling after prefix: %q", rendered)
+	}
+}
+
+func TestFileOpenMsgReportsFailure(t *testing.T) {
+	model := m{}
+
+	next, cmd := model.Update(fileOpenMsg{path: "C:\\missing.txt", err: fmt.Errorf("shell failed")})
+	got := next.(m)
+	if cmd == nil {
+		t.Fatal("expected top bar command on file open failure")
+	}
+	followUp := cmd()
+	final, _ := got.Update(followUp)
+	updated := final.(m)
+	if updated.topBarMsg != "Open failed: shell failed" {
+		t.Fatalf("topBarMsg = %q, want %q", updated.topBarMsg, "Open failed: shell failed")
 	}
 }
 
