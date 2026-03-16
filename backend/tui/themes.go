@@ -1,6 +1,206 @@
 package main
 
 var (
+	// Ember — near-black coal bg, glowing amber/orange/red — like a dying fire
+	Ember = Theme{
+		Brand:                 "#ff8c00", // amber flame
+		Accent:                "#ff6b35", // vivid ember orange
+		Purple:                "#cc3333", // deep red — no purple in fire
+		Amber:                 "#ffb347", // bright amber
+		Red:                   "#ff3300", // hot red ember
+		Muted:                 "#4a3018", // dark coal-brown
+		Text:                  "#f5deb3", // warm wheat, fire-lit parchment
+		ImageTag:              "#ff4500", // orange-red
+		VideoTag:              "#ffb347", // amber
+		AudioTag:              "#ffd700", // molten gold
+		FileTag:               "#ff8c00", // deep amber
+		StickerTag:            "#cc3333", // deep red
+		ContactTag:            "#e06030", // burnt orange
+		PollTag:               "#ffcb6b", // warm gold
+		LocationTag:           "#ff6b35", // ember orange
+		AnomalyTag:            "#ff3300", // hot red
+		SentText:              "#ffe0b0", // warm amber-white
+		ReceivedText:          "#ffd0a0", // warm parchment
+		SentName:              "#ff8c00", // amber flame — "me"
+		ReceivedName:          "#cc3333", // deep red — "them"
+		QuotedSentText:        "#a07040", // muted amber
+		QuotedReceivedText:    "#9a5a30", // muted burnt orange
+		BadgeInk:              "#0e0900",
+		ButtonInk:             "#0e0900",
+		TagInk:                "#0e0900",
+		Cursor:                "#ff8c00",
+		QRLight:               "#FFFFFF",
+		QRDark:                "#0e0900",
+		ShortcutActive:        "#1e1400",
+		SidebarActiveBg:       "#2a1800", // dark amber tint
+		SidebarActiveUnreadBg: "#251000", // darker red tint
+		ReplyPreviewBg:        "#1a1000",
+		MessageSelectedBg:     "#1e1200",
+		MediaTokenBg:          "#ff4500",
+		MediaTokenPulseBg:     "#ff8c00",
+		Background:            "#0e0900", // near-black coal
+	}
+
+	// Glacier — very dark ice-navy bg, pale blues and crisp whites — cold and minimal
+	Glacier = Theme{
+		Brand:                 "#7ec8e3", // glacier blue
+		Accent:                "#a8daf0", // pale ice
+		Purple:                "#8899cc", // deep periwinkle
+		Amber:                 "#b8d4e8", // pale cool — no warm amber in glaciers
+		Red:                   "#7090b8", // steel-blue danger
+		Muted:                 "#2a4060", // deep slate
+		Text:                  "#d8eef8", // cool ice-white
+		ImageTag:              "#a8daf0", // ice blue
+		VideoTag:              "#7ec8e3", // glacier
+		AudioTag:              "#c4e8f8", // very pale ice
+		FileTag:               "#8ab8d8", // medium ice
+		StickerTag:            "#8899cc", // periwinkle
+		ContactTag:            "#60b0d0", // teal-blue
+		PollTag:               "#b0d0e8", // soft ice
+		LocationTag:           "#7890c0", // deep periwinkle
+		AnomalyTag:            "#9090b8", // muted cool — cold anomaly
+		SentText:              "#c0e8f8", // icy sent
+		ReceivedText:          "#d0d8f0", // periwinkle-tinted received
+		SentName:              "#7ec8e3", // glacier — "me"
+		ReceivedName:          "#8899cc", // periwinkle — "them"
+		QuotedSentText:        "#5888a8", // deeper glacier
+		QuotedReceivedText:    "#607898", // muted slate
+		BadgeInk:              "#080e14",
+		ButtonInk:             "#080e14",
+		TagInk:                "#080e14",
+		Cursor:                "#a8daf0",
+		QRLight:               "#FFFFFF",
+		QRDark:                "#080e14",
+		ShortcutActive:        "#101c28",
+		SidebarActiveBg:       "#142030", // dark ice-navy active
+		SidebarActiveUnreadBg: "#0e1a2a", // deeper navy unread
+		ReplyPreviewBg:        "#0c1824",
+		MessageSelectedBg:     "#101e2c",
+		MediaTokenBg:          "#7ec8e3",
+		MediaTokenPulseBg:     "#a8daf0",
+		Background:            "#080e14", // very dark ice-navy
+	}
+
+	// Verdant — very dark forest floor bg, rich greens and warm bark tones
+	Verdant = Theme{
+		Brand:                 "#5aab3a", // forest green
+		Accent:                "#78c850", // leaf bright green
+		Purple:                "#8a9060", // olive — nature's "purple"
+		Amber:                 "#c8a030", // honey gold — bark warmth
+		Red:                   "#c04a3a", // berry red
+		Muted:                 "#3a4828", // dark olive
+		Text:                  "#c8dca8", // pale sage
+		ImageTag:              "#c04a3a", // berry
+		VideoTag:              "#78c850", // leaf
+		AudioTag:              "#c8a030", // honey
+		FileTag:               "#5aab3a", // forest
+		StickerTag:            "#8a9060", // olive
+		ContactTag:            "#50a860", // teal-green
+		PollTag:               "#d4b844", // warm gold
+		LocationTag:           "#6a9060", // sage
+		AnomalyTag:            "#c04a3a", // berry
+		SentText:              "#c0e8a0", // pale leaf green
+		ReceivedText:          "#d4c890", // warm parchment — earthy contrast
+		SentName:              "#5aab3a", // forest green — "me"
+		ReceivedName:          "#c8a030", // honey gold — "them"
+		QuotedSentText:        "#7a9860", // muted olive-green
+		QuotedReceivedText:    "#9a8850", // muted bark
+		BadgeInk:              "#0a0f07",
+		ButtonInk:             "#0a0f07",
+		TagInk:                "#0a0f07",
+		Cursor:                "#78c850",
+		QRLight:               "#FFFFFF",
+		QRDark:                "#0a0f07",
+		ShortcutActive:        "#141e0c",
+		SidebarActiveBg:       "#182410", // dark forest active
+		SidebarActiveUnreadBg: "#1a1e08", // darker earthy unread
+		ReplyPreviewBg:        "#121a0c",
+		MessageSelectedBg:     "#101808",
+		MediaTokenBg:          "#5aab3a",
+		MediaTokenPulseBg:     "#78c850",
+		Background:            "#0a0f07", // very dark forest floor
+	}
+
+	// Dusk — deep indigo-purple bg, warm sunset oranges, rose-golds, twilight violet
+	Dusk = Theme{
+		Brand:                 "#f4a261", // warm sunset orange-gold
+		Accent:                "#e76f51", // burnt coral — the last light
+		Purple:                "#c084fc", // twilight violet
+		Amber:                 "#ffd166", // golden hour
+		Red:                   "#ef4565", // vivid sunset red
+		Muted:                 "#5a3868", // deep indigo-purple
+		Text:                  "#f0d4e8", // warm lavender-rose white
+		ImageTag:              "#ef4565", // sunset red
+		VideoTag:              "#c084fc", // violet
+		AudioTag:              "#ffd166", // golden
+		FileTag:               "#f4a261", // orange-gold
+		StickerTag:            "#e879f9", // orchid
+		ContactTag:            "#ff9eb5", // rose
+		PollTag:               "#ffd166", // gold
+		LocationTag:           "#a08cff", // periwinkle-violet
+		AnomalyTag:            "#ef4565", // sunset red
+		SentText:              "#ffe8c8", // warm golden-white — sunset light
+		ReceivedText:          "#f0dff8", // soft violet — twilight sky
+		SentName:              "#f4a261", // sunset orange — "me"
+		ReceivedName:          "#c084fc", // twilight violet — "them"
+		QuotedSentText:        "#a07858", // muted amber-gold
+		QuotedReceivedText:    "#a080b8", // muted violet
+		BadgeInk:              "#110818",
+		ButtonInk:             "#110818",
+		TagInk:                "#110818",
+		Cursor:                "#f4a261",
+		QRLight:               "#FFFFFF",
+		QRDark:                "#110818",
+		ShortcutActive:        "#1e1028",
+		SidebarActiveBg:       "#2a1040", // rich plum-indigo active
+		SidebarActiveUnreadBg: "#1e0c30", // deeper indigo unread
+		ReplyPreviewBg:        "#1c0c30",
+		MessageSelectedBg:     "#180a28",
+		MediaTokenBg:          "#e76f51",
+		MediaTokenPulseBg:     "#f4a261",
+		Background:            "#110818", // deep indigo-purple
+	}
+
+	// Fossil — dark warm sepia-black bg, aged parchment, ochre, leather tones
+	Fossil = Theme{
+		Brand:                 "#c8a864", // parchment gold
+		Accent:                "#a87c50", // aged leather
+		Purple:                "#8a6858", // muted terracotta — earthy "purple"
+		Amber:                 "#d4b06a", // warm ochre
+		Red:                   "#a84840", // burnt sienna
+		Muted:                 "#604e38", // dark sepia
+		Text:                  "#e8dcc0", // aged parchment
+		ImageTag:              "#a84840", // burnt sienna
+		VideoTag:              "#a87c50", // leather
+		AudioTag:              "#d4b06a", // ochre
+		FileTag:               "#c8a864", // parchment gold
+		StickerTag:            "#8a6858", // terracotta
+		ContactTag:            "#b08860", // warm caramel
+		PollTag:               "#dcc070", // bright ochre
+		LocationTag:           "#906858", // muted clay
+		AnomalyTag:            "#a84840", // burnt sienna
+		SentText:              "#eedcb0", // warm parchment
+		ReceivedText:          "#dcc8a0", // slightly darker parchment
+		SentName:              "#c8a864", // parchment gold — "me"
+		ReceivedName:          "#a87c50", // aged leather — "them"
+		QuotedSentText:        "#9a8460", // muted gold
+		QuotedReceivedText:    "#887060", // muted sepia
+		BadgeInk:              "#14110c",
+		ButtonInk:             "#14110c",
+		TagInk:                "#14110c",
+		Cursor:                "#c8a864",
+		QRLight:               "#FFFFFF",
+		QRDark:                "#14110c",
+		ShortcutActive:        "#201a12",
+		SidebarActiveBg:       "#2a2018", // dark warm sepia active
+		SidebarActiveUnreadBg: "#251a10", // darker unread
+		ReplyPreviewBg:        "#1c1610",
+		MessageSelectedBg:     "#1a140e",
+		MediaTokenBg:          "#a87c50",
+		MediaTokenPulseBg:     "#c8a864",
+		Background:            "#14110c", // dark warm sepia-black
+	}
+
 	// Linen — warm off-white bg, pastel muted palette, soft and modern
 	Linen = Theme{
 		Brand:                 "#7a9e9f", // muted teal-sage

@@ -1379,62 +1379,20 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 	case txt == "/theme":
 		x.openThemePicker()
 		return nil, true
-	case txt == "/theme1linen":
-		currentTheme = Linen
-		currentConfig.ThemeName = "linen"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Linen"), true
-	case txt == "/theme2tokyonight":
-		currentTheme = TokyoNight
-		currentConfig.ThemeName = "tokyonight"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Tokyo Night"), true
-	case txt == "/theme3catppuccin":
-		currentTheme = Catppuccin
-		currentConfig.ThemeName = "catppuccin"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Catppuccin"), true
-	case txt == "/theme4monokai":
-		currentTheme = Monokai
-		currentConfig.ThemeName = "monokai"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Monokai"), true
-	case txt == "/theme5charcoal":
-		currentTheme = Charcoal
-		currentConfig.ThemeName = "charcoal"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Charcoal"), true
-	case txt == "/theme6aurora":
-		currentTheme = Aurora
-		currentConfig.ThemeName = "aurora"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Aurora"), true
-	case txt == "/theme7sakura":
-		currentTheme = Sakura
-		currentConfig.ThemeName = "sakura"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Sakura"), true
-	case txt == "/theme8abyssal":
-		currentTheme = Abyssal
-		currentConfig.ThemeName = "abyssal"
-		saveConfig()
-		rehashStyles()
-		x.mainCache.result = ""
-		return x.setTopBar("Theme: Abyssal"), true
+	case strings.HasPrefix(txt, "/theme") && txt != "/theme":
+		suffix := txt[len("/theme"):]
+		// Strip optional leading digit (e.g. "/theme1linen" → "linen").
+		if len(suffix) > 0 && suffix[0] >= '0' && suffix[0] <= '9' {
+			suffix = suffix[1:]
+		}
+		for _, t := range themeList {
+			if t.name == suffix {
+				applyThemeByName(t.name)
+				saveConfig()
+				x.mainCache.result = ""
+				return x.setTopBar("Theme: " + t.displayName), true
+			}
+		}
 	case txt == "/mouseon":
 		x.mouseEnabled = true
 		currentConfig.MouseEnabled = true

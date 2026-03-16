@@ -21,6 +21,11 @@ var themeList = []struct {
 	{"aurora", "Aurora", Aurora},
 	{"sakura", "Sakura", Sakura},
 	{"abyssal", "Abyssal", Abyssal},
+	{"ember", "Ember", Ember},
+	{"glacier", "Glacier", Glacier},
+	{"verdant", "Verdant", Verdant},
+	{"dusk", "Dusk", Dusk},
+	{"fossil", "Fossil", Fossil},
 }
 
 func (x *m) openThemePicker() {
@@ -58,6 +63,10 @@ func applyThemeByName(name string) {
 			return
 		}
 	}
+	// Unknown name: fall back to first theme in list.
+	currentTheme = themeList[0].theme
+	currentConfig.ThemeName = themeList[0].name
+	rehashStyles()
 }
 
 func (x m) handleThemePicker(k tea.KeyMsg) (tea.Model, tea.Cmd) {

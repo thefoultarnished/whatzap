@@ -20,25 +20,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	switch currentConfig.ThemeName {
-	case "abyssal":
-		currentTheme = Abyssal
-	case "aurora":
-		currentTheme = Aurora
-	case "catppuccin":
-		currentTheme = Catppuccin
-	case "charcoal":
-		currentTheme = Charcoal
-	case "linen":
-		currentTheme = Linen
-	case "monokai":
-		currentTheme = Monokai
-	case "sakura":
-		currentTheme = Sakura
-	default:
-		currentTheme = TokyoNight
-	}
-	rehashStyles()
+	applyThemeByName(currentConfig.ThemeName)
 
 	backendDir := detectDirs()
 	demoMode := demoEnabled()

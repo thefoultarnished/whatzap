@@ -1,6 +1,10 @@
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 func getBrand() lipgloss.Color        { return lipgloss.Color(currentTheme.Brand) }
 func getAccent() lipgloss.Color       { return lipgloss.Color(currentTheme.Accent) }
@@ -61,17 +65,27 @@ var (
 	replyPreviewBg, messageSelectedBg, mediaTokenBg, mediaTokenPulseBg lipgloss.Color
 
 	spinnerFrames  = []string{"✶", "✸", "✹", "✺", "✹", "✷"}
-	systemCommands = []string{
-		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
-		"/theme", "/theme1linen", "/theme2tokyonight", "/theme3catppuccin", "/theme4monokai", "/theme5charcoal", "/theme6aurora", "/theme7sakura", "/theme8abyssal",
-		"/mouseon", "/mouseoff",
-		"/sound1", "/sound2", "/sound3", "/sound4", "/sound5", "/soundon", "/soundoff",
-	}
-	chatCommands = []string{
+	systemCommands []string
+	chatCommands   = []string{
 		"/emoji",
 		"/send",
 	}
 )
+
+func init() {
+	cmds := []string{
+		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
+		"/theme",
+	}
+	for i, t := range themeList {
+		cmds = append(cmds, fmt.Sprintf("/theme%d%s", i+1, t.name))
+	}
+	cmds = append(cmds,
+		"/mouseon", "/mouseoff",
+		"/sound1", "/sound2", "/sound3", "/sound4", "/sound5", "/soundon", "/soundoff",
+	)
+	systemCommands = cmds
+}
 
 var (
 	baseBoxStyle = lipgloss.NewStyle().
