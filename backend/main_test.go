@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
+	waWeb "go.mau.fi/whatsmeow/proto/waWeb"
+	"google.golang.org/protobuf/proto"
 	_ "modernc.org/sqlite"
 )
 
@@ -163,6 +169,81 @@ func TestUpsertMessageDedupesAndKeepsUnreadStable(t *testing.T) {
 	}
 	if got := app.state.Chats["15551230001@s.whatsapp.net"].UnreadCount; got != 1 {
 		t.Fatalf("unread count = %d, want 1", got)
+	}
+}
+
+func TestUpsertMessageKeepsNewestConversationTimestamp(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+
+	app.upsertMessage(chatID, WireMessage{
+		Key:              WireKey{ID: "newest", FromMe: false},
+		MessageTimestamp: 200,
+		Message:          map[string]any{"conversation": "latest"},
+	})
+	app.upsertMessage(chatID, WireMessage{
+		Key:              WireKey{ID: "older", FromMe: false},
+		MessageTimestamp: 100,
+		Message:          map[string]any{"conversation": "older"},
+	})
+	app.upsertMessage(chatID, WireMessage{
+		Key:              WireKey{ID: "zero", FromMe: false},
+		MessageTimestamp: 0,
+		Message:          map[string]any{"conversation": "unknown"},
+	})
+
+	if got := app.state.Chats[chatID].ConversationTimestamp; got != 200 {
+		t.Fatalf("conversation timestamp = %d, want 200", got)
+	}
+}
+
+func TestApplyHistorySyncDoesNotDoubleCountUnread(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+
+	history := &waHistorySync.HistorySync{
+		Conversations: []*waHistorySync.Conversation{
+			{
+				ID:                    proto.String(chatID),
+				ConversationTimestamp: proto.Uint64(200),
+				LastMsgTimestamp:      proto.Uint64(200),
+				UnreadCount:           proto.Uint32(3),
+				Messages: []*waHistorySync.HistorySyncMsg{
+					{
+						Message: &waWeb.WebMessageInfo{
+							Key: &waCommon.MessageKey{
+								ID:        proto.String("m1"),
+								RemoteJID: proto.String(chatID),
+								FromMe:    proto.Bool(false),
+							},
+							MessageTimestamp: proto.Uint64(100),
+							Message: &waE2E.Message{
+								Conversation: proto.String("older 1"),
+							},
+						},
+					},
+					{
+						Message: &waWeb.WebMessageInfo{
+							Key: &waCommon.MessageKey{
+								ID:        proto.String("m2"),
+								RemoteJID: proto.String(chatID),
+								FromMe:    proto.Bool(false),
+							},
+							MessageTimestamp: proto.Uint64(150),
+							Message: &waE2E.Message{
+								Conversation: proto.String("older 2"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	app.applyHistorySync(history)
+
+	if got := app.state.Chats[chatID].UnreadCount; got != 3 {
+		t.Fatalf("unread count = %d, want 3", got)
 	}
 }
 
@@ -524,6 +605,26 @@ func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 	}
 }
 
+func TestLoadStateCorruptionFallsBackToBootstrap(t *testing.T) {
+	app := newTestApp(t)
+	app.state.Chats["stale"] = Chat{ID: "stale"}
+	if err := os.WriteFile(app.cachePath, []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("write corrupt state file failed: %v", err)
+	}
+
+	app.loadState()
+
+	if !app.needsBootstrapSync {
+		t.Fatalf("expected bootstrap mode after corrupt state")
+	}
+	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 || len(app.state.Messages) != 0 {
+		t.Fatalf("expected in-memory state reset after corrupt state")
+	}
+	if _, err := os.Stat(app.cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected corrupt cache file to be removed, got err=%v", err)
+	}
+}
+
 // Cache path check.
 func TestResolveBackendCacheDirUsesOverride(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "appdata")
@@ -652,6 +753,32 @@ func TestHandleChatsAndContacts(t *testing.T) {
 	}
 }
 
+func TestUpsertPermissionSkipsNilDB(t *testing.T) {
+	app := newTestApp(t)
+	_ = app.db.Close()
+	app.db = nil
+
+	app.upsertPermission("15551230001", "Alex")
+}
+
+func TestUpsertPermissionSkipsDuringShutdown(t *testing.T) {
+	app := newTestApp(t)
+	app.mu.Lock()
+	app.shuttingDown = true
+	app.mu.Unlock()
+
+	app.upsertPermission("15551230001", "Alex")
+
+	rows, err := app.db.Query(`SELECT phone, name, allowed FROM chat_permissions`)
+	if err != nil {
+		t.Fatalf("query permissions: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatalf("expected no permission rows during shutdown")
+	}
+}
+
 // Whitelist check.
 func TestWhitelistRoundTrip(t *testing.T) {
 	app := newTestApp(t)
@@ -712,6 +839,43 @@ func TestCoreRouteValidation(t *testing.T) {
 	app.handleSetWhitelist(setWhitelistRec, setWhitelistReq)
 	if setWhitelistRec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("whitelist method status = %d, want %d", setWhitelistRec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandleMessagesCapsLimit(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	msgs := make([]WireMessage, 0, 250)
+	for i := 0; i < 250; i++ {
+		msgs = append(msgs, WireMessage{
+			Key:              WireKey{ID: fmt.Sprintf("m-%03d", i), RemoteJID: chatID},
+			MessageTimestamp: int64(i + 1),
+			Message:          map[string]any{"conversation": fmt.Sprintf("msg %03d", i)},
+		})
+	}
+	app.state.Messages[chatID] = msgs
+
+	req := httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&limit=9999", nil)
+	rec := httptest.NewRecorder()
+	app.handleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse messages response: %v", err)
+	}
+	if len(body.Messages) != maxMessagesResponseLimit {
+		t.Fatalf("message count = %d, want %d", len(body.Messages), maxMessagesResponseLimit)
+	}
+	if body.Messages[0].Key.ID != "m-050" {
+		t.Fatalf("first returned message = %q, want m-050", body.Messages[0].Key.ID)
+	}
+	if body.Messages[len(body.Messages)-1].Key.ID != "m-249" {
+		t.Fatalf("last returned message = %q, want m-249", body.Messages[len(body.Messages)-1].Key.ID)
 	}
 }
 

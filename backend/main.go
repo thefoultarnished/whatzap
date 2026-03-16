@@ -115,9 +115,11 @@ type App struct {
 
 	needsBootstrapSync bool
 	historySyncing     bool
+	shuttingDown       bool
 }
 
 const maxUploadBytes = 100 * 1024 * 1024
+const maxMessagesResponseLimit = 200
 const appDataDirName = "WhatZAP"
 const apiTokenEnvVar = "WHATZAP_API_TOKEN"
 const authHeaderName = "Authorization"
@@ -664,8 +666,10 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 
 	chat := a.state.Chats[chatID]
 	chat.ID = chatID
-	chat.ConversationTimestamp = msg.MessageTimestamp
-	if isNew && !msg.Key.FromMe {
+	if msg.MessageTimestamp > chat.ConversationTimestamp {
+		chat.ConversationTimestamp = msg.MessageTimestamp
+	}
+	if isNew && !msg.Key.FromMe && !a.historySyncing {
 		chat.UnreadCount++
 	}
 	if chat.Name == "" && msg.PushName != "" && !msg.Key.FromMe && !strings.HasSuffix(chatID, "@g.us") {
@@ -884,22 +888,30 @@ func (a *App) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	a.wsMu.Lock()
-	a.wsClients[conn] = struct{}{}
-	a.wsMu.Unlock()
 	a.mu.RLock()
 	connected := a.connected
 	a.mu.RUnlock()
+	a.wsMu.Lock()
 	if connected {
 		if data, err := json.Marshal(EventEnvelope{Type: "ready"}); err == nil {
 			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_ = conn.WriteMessage(websocket.TextMessage, data)
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				a.wsMu.Unlock()
+				_ = conn.Close()
+				return
+			}
 		}
 		if data, err := json.Marshal(EventEnvelope{Type: "chats:loaded"}); err == nil {
 			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_ = conn.WriteMessage(websocket.TextMessage, data)
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				a.wsMu.Unlock()
+				_ = conn.Close()
+				return
+			}
 		}
 	}
+	a.wsClients[conn] = struct{}{}
+	a.wsMu.Unlock()
 
 	go func() {
 		defer func() {
@@ -1323,7 +1335,7 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := 50
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
-		limit = n
+		limit = min(n, maxMessagesResponseLimit)
 	}
 
 	a.mu.RLock()
@@ -1610,6 +1622,14 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	a.mu.Lock()
+	a.shuttingDown = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.shuttingDown = false
+		a.mu.Unlock()
+	}()
 	hadRuntimeResources := a.client != nil || a.storeContainer != nil
 	var warnings []string
 	if a.client != nil {
@@ -1961,6 +1981,17 @@ func (a *App) loadState() {
 	var state PersistedState
 	if err := json.Unmarshal(raw, &state); err != nil {
 		log.Printf("state parse error: %v", err)
+		a.mu.Lock()
+		a.state = PersistedState{
+			Chats:    map[string]Chat{},
+			Contacts: map[string]Contact{},
+			Messages: map[string][]WireMessage{},
+		}
+		a.needsBootstrapSync = true
+		a.mu.Unlock()
+		if removeErr := os.Remove(a.cachePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			log.Printf("state cleanup error: %v", removeErr)
+		}
 		return
 	}
 	if state.Chats == nil {
@@ -2073,6 +2104,15 @@ func (a *App) safeFetchAppState(ctx context.Context, name appstate.WAPatchName) 
 }
 
 func (a *App) persistState() {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	shuttingDown := a.shuttingDown
+	a.mu.RUnlock()
+	if shuttingDown {
+		return
+	}
 	_ = a.persistStateWithErr()
 }
 
@@ -2326,7 +2366,17 @@ func (a *App) upsertPermission(phone, name string) {
 	if phone == "" {
 		return
 	}
-	_, _ = a.db.Exec(
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	shuttingDown := a.shuttingDown
+	db := a.db
+	a.mu.RUnlock()
+	if shuttingDown || db == nil {
+		return
+	}
+	_, _ = db.Exec(
 		`INSERT OR IGNORE INTO chat_permissions (phone, name, allowed) VALUES (?, ?, 0)`,
 		phone, name,
 	)
@@ -2458,8 +2508,17 @@ func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "temp file error")
 		return
 	}
-	tmp.Write(data)
-	tmp.Close()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		writeErr(w, http.StatusInternalServerError, "temp file write error")
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		writeErr(w, http.StatusInternalServerError, "temp file close error")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": tmp.Name()})
 }
 

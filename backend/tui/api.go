@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -292,7 +293,10 @@ func getContacts(c *http.Client, base string) tea.Cmd {
 }
 func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
 	return func() tea.Msg {
-		u := fmt.Sprintf("%s/messages?chatId=%s&limit=%d", base, chatID, limit)
+		q := url.Values{}
+		q.Set("chatId", chatID)
+		q.Set("limit", strconv.Itoa(limit))
+		u := base + "/messages?" + q.Encode()
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
 		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
@@ -436,8 +440,11 @@ func getWhitelist(c *http.Client, base string) tea.Cmd {
 
 func downloadMedia(c *http.Client, base, chatID, msgID string) tea.Cmd {
 	return func() tea.Msg {
-		url := base + "/media/download?chatId=" + chatID + "&msgId=" + msgID
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		q := url.Values{}
+		q.Set("chatId", chatID)
+		q.Set("msgId", msgID)
+		u := base + "/media/download?" + q.Encode()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
 		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {

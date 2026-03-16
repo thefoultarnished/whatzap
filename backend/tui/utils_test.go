@@ -107,12 +107,18 @@ func TestAPICommandsSurfaceBackendErrors(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":"contacts store unavailable"}`))
 		case "/messages":
+			if got := r.URL.Query().Get("chatId"); got != "chat&1" {
+				t.Fatalf("messages chatId query = %q, want chat&1", got)
+			}
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"error":"not connected"}`))
 		case "/whitelist":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":"db offline"}`))
 		case "/media/download":
+			if got := r.URL.Query().Get("msgId"); got != "msg&1" {
+				t.Fatalf("media msgId query = %q, want msg&1", got)
+			}
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"media not found"}`))
 		case "/names/set":
@@ -132,13 +138,13 @@ func TestAPICommandsSurfaceBackendErrors(t *testing.T) {
 	if msg := getContacts(client, srv.URL)(); !strings.Contains(msg.(contactsMsg).err.Error(), "500 Internal Server Error: contacts store unavailable") {
 		t.Fatalf("unexpected contacts error: %v", msg.(contactsMsg).err)
 	}
-	if msg := getMsgs(client, srv.URL, "chat-1", 10)(); !strings.Contains(msg.(msgsMsg).err.Error(), "409 Conflict: not connected") {
+	if msg := getMsgs(client, srv.URL, "chat&1", 10)(); !strings.Contains(msg.(msgsMsg).err.Error(), "409 Conflict: not connected") {
 		t.Fatalf("unexpected messages error: %v", msg.(msgsMsg).err)
 	}
 	if msg := getWhitelist(client, srv.URL)(); !strings.Contains(msg.(whitelistLoadMsg).err.Error(), "500 Internal Server Error: db offline") {
 		t.Fatalf("unexpected whitelist error: %v", msg.(whitelistLoadMsg).err)
 	}
-	if msg := downloadMedia(client, srv.URL, "chat-1", "msg-1")(); !strings.Contains(msg.(mediaDownloadMsg).err.Error(), "404 Not Found: media not found") {
+	if msg := downloadMedia(client, srv.URL, "chat-1", "msg&1")(); !strings.Contains(msg.(mediaDownloadMsg).err.Error(), "404 Not Found: media not found") {
 		t.Fatalf("unexpected media error: %v", msg.(mediaDownloadMsg).err)
 	}
 	if msg := setName(client, srv.URL, "", "Alex")(); !strings.Contains(msg.(whitelistSetMsg).err.Error(), "400 Bad Request: phone is required") {
