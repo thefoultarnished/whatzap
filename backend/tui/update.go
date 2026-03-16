@@ -401,6 +401,13 @@ func setTerminalBg(color string) {
 	}
 }
 
+func setTerminalBgCmd(color string) tea.Cmd {
+	return func() tea.Msg {
+		setTerminalBg(color)
+		return nil
+	}
+}
+
 func setTerminalTitleCmd(title string) tea.Cmd {
 	clean := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(title), "\x1b", ""), "\a", "")
 	if clean == "" {
@@ -701,7 +708,6 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		x.leftInputFocused = false
 		x.sidebarFocused = true
 		x.mode = "search"
-		x.searchInput = ""
 		x.ensureSideVisible(x.sideViewRows())
 		return x, nil
 	case "alt+m":

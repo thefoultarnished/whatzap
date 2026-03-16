@@ -29,6 +29,8 @@ func main() {
 		currentTheme = Catppuccin
 	case "charcoal":
 		currentTheme = Charcoal
+	case "linen":
+		currentTheme = Linen
 	case "monokai":
 		currentTheme = Monokai
 	case "sakura":

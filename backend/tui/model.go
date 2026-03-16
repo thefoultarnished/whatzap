@@ -235,8 +235,9 @@ type syncGroupsDoneMsg struct {
 }
 
 func (x m) Init() tea.Cmd {
+	bgCmd := setTerminalBgCmd(currentTheme.Background)
 	if x.demoMode {
-		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"))
+		return tea.Batch(initDemo(), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"), bgCmd)
 	}
-	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir, x.apiToken), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"))
+	return tea.Batch(ensureBackend(x.client, x.baseURL, x.backendDir, x.apiToken), nextCursorBlink(), nextSpinnerTick(), setTerminalTitleCmd("WhatZap"), bgCmd)
 }
