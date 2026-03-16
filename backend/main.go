@@ -335,9 +335,6 @@ func (a *App) resetPersistentStorage() error {
 		if err := os.RemoveAll(a.cacheDir); err != nil {
 			return err
 		}
-		if a.client == nil {
-			return nil
-		}
 		return a.initPersistentResources()
 	}
 
@@ -1332,9 +1329,20 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"messages": all})
 }
 
+func (a *App) requireConnectedClient(w http.ResponseWriter) bool {
+	if a == nil || a.client == nil || !a.client.IsConnected() || !a.client.IsLoggedIn() {
+		writeErr(w, http.StatusConflict, "not connected")
+		return false
+	}
+	return true
+}
+
 func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.requireConnectedClient(w) {
 		return
 	}
 	var req struct {
@@ -1418,6 +1426,9 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleSendFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.requireConnectedClient(w) {
 		return
 	}
 	var req struct {
@@ -1567,6 +1578,9 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleProfilePicture(w http.ResponseWriter, r *http.Request) {
+	if !a.requireConnectedClient(w) {
+		return
+	}
 	jidRaw := strings.TrimSpace(r.URL.Query().Get("jid"))
 	if jidRaw == "" {
 		writeErr(w, http.StatusBadRequest, "jid is required")
@@ -1590,6 +1604,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	hadRuntimeResources := a.client != nil || a.storeContainer != nil
 	var warnings []string
 	if a.client != nil {
 		if a.client.Store != nil && a.client.Store.ID != nil {
@@ -1627,10 +1642,29 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		a.db = nil
 	}
 	if strings.TrimSpace(a.cacheDir) != "" {
-		if err := os.RemoveAll(a.cacheDir); err != nil {
-			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("local cleanup failed: %v", err))
+		if hadRuntimeResources {
+			if err := a.resetPersistentStorage(); err != nil {
+				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
+				return
+			}
+		} else {
+			if err := os.RemoveAll(a.cacheDir); err != nil {
+				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
+				return
+			}
+			if err := os.MkdirAll(a.cacheDir, 0o755); err != nil {
+				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
+				return
+			}
+			a.cachePath = filepath.Join(a.cacheDir, "state.json")
+		}
+		if err := a.persistStateWithErr(); err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
 			return
 		}
+	} else if err := a.persistStateWithErr(); err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
+		return
 	}
 	msg := "Logged out successfully"
 	if len(warnings) > 0 {
@@ -2374,6 +2408,9 @@ func (a *App) handleSetName(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
+	if !a.requireConnectedClient(w) {
+		return
+	}
 	chatID := r.URL.Query().Get("chatId")
 	msgID := r.URL.Query().Get("msgId")
 	if chatID == "" || msgID == "" {

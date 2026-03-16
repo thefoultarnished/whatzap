@@ -696,7 +696,7 @@ func TestCoreRouteValidation(t *testing.T) {
 	sendFileReq := httptest.NewRequest(http.MethodPost, "/messages/send-file", bytes.NewBufferString(`{"chatId":"15551230001@s.whatsapp.net","path":"missing.txt","kind":"document"}`))
 	sendFileRec := httptest.NewRecorder()
 	app.handleSendFile(sendFileRec, sendFileReq)
-	if sendFileRec.Code != http.StatusBadRequest || !strings.Contains(sendFileRec.Body.String(), "file not found") {
+	if sendFileRec.Code != http.StatusConflict || !strings.Contains(sendFileRec.Body.String(), "not connected") {
 		t.Fatalf("unexpected send-file response: %d %s", sendFileRec.Code, sendFileRec.Body.String())
 	}
 
@@ -712,6 +712,56 @@ func TestCoreRouteValidation(t *testing.T) {
 	app.handleSetWhitelist(setWhitelistRec, setWhitelistReq)
 	if setWhitelistRec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("whitelist method status = %d, want %d", setWhitelistRec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestHandlersRequiringWhatsAppConnectionReturnConflictWhenDisconnected(t *testing.T) {
+	app := newTestApp(t)
+	app.state.Messages["15551230001@s.whatsapp.net"] = []WireMessage{
+		{
+			Key:        WireKey{ID: "m1", RemoteJID: "15551230001@s.whatsapp.net"},
+			MediaProto: "ZmFrZQ==",
+		},
+	}
+
+	tests := []struct {
+		name string
+		req  *http.Request
+		run  func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "send message",
+			req:  httptest.NewRequest(http.MethodPost, "/messages/send", bytes.NewBufferString(`{"chatId":"15551230001@s.whatsapp.net","text":"hi"}`)),
+			run:  app.handleSendMessage,
+		},
+		{
+			name: "send file",
+			req:  httptest.NewRequest(http.MethodPost, "/messages/send-file", bytes.NewBufferString(`{"chatId":"15551230001@s.whatsapp.net","path":"sample.txt","kind":"document"}`)),
+			run:  app.handleSendFile,
+		},
+		{
+			name: "profile picture",
+			req:  httptest.NewRequest(http.MethodGet, "/profile-picture?jid=15551230001@s.whatsapp.net", nil),
+			run:  app.handleProfilePicture,
+		},
+		{
+			name: "media download",
+			req:  httptest.NewRequest(http.MethodGet, "/media/download?chatId=15551230001@s.whatsapp.net&msgId=m1", nil),
+			run:  app.handleMediaDownload,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			tt.run(rec, tt.req)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "not connected") {
+				t.Fatalf("unexpected body: %s", rec.Body.String())
+			}
+		})
 	}
 }
 

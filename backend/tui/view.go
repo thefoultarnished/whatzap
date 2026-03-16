@@ -325,13 +325,13 @@ func (x m) renderCommandBox(leftW int) string {
 		}
 		if ghost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(ghost)
-			if true {
+			if x.cursorOn {
 				cmdContent += cursorStyle.Render(firstGhost)
 			} else {
 				cmdContent += ghostStyle.Render(firstGhost)
 			}
 			cmdContent += ghostStyle.Render(restGhost)
-		} else if true {
+		} else if x.cursorOn {
 			cmdContent += lipgloss.NewStyle().Foreground(cursorColor).Render("|")
 		} else {
 			cmdContent += " "
@@ -385,13 +385,13 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" " + typedInput)
 		if rightFocused && inputGhost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(inputGhost)
-			if true {
+			if x.cursorOn {
 				inputDisplay += cursorStyle.Render(firstGhost)
 			} else {
 				inputDisplay += ghostStyle.Render(firstGhost)
 			}
 			inputDisplay += ghostStyle.Render(restGhost)
-		} else if rightFocused && true {
+		} else if rightFocused && x.cursorOn {
 			inputDisplay += inputCursorStyle.Render(inputCursorGlyph)
 		} else if rightFocused {
 			inputDisplay += inputCursorStyle.Render(" ")
@@ -417,7 +417,7 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 	} else if inputLocked {
 		inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" blacklisted | Ctrl+K then /whitelist")
 	} else if rightFocused && !x.emojiPickerOpen && typedInput == "" {
-		if true {
+		if x.cursorOn {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
 				inputCursorStyle.Render(inputCursorGlyph) +
 				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E for emoji")
@@ -773,7 +773,7 @@ func (x m) renderMain(w, h int) string {
 				sid := x.senderIDForMsg(msg)
 				fullName := x.nameFor(sid)
 				senderNum := num(sid)
-				isKnown := rIsMe || x.names[senderNum] != "" || x.whitelist[senderNum] != ""
+				isKnown := rIsMe || strings.TrimSpace(fullName) != "" || x.names[senderNum] != "" || x.whitelist[senderNum] != ""
 				if !msg.Key.FromMe {
 					rSender = truncate(fullName, 10)
 				}

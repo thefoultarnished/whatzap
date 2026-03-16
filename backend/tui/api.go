@@ -57,6 +57,31 @@ func formatBackendStartupError(prefix string, raw string) error {
 	return fmt.Errorf("%s: %s", prefix, msg)
 }
 
+func apiErrorFromResponse(res *http.Response, fallback string) error {
+	if res == nil {
+		return fmt.Errorf("%s", fallback)
+	}
+	raw, _ := io.ReadAll(res.Body)
+	msg := strings.TrimSpace(string(raw))
+	if len(raw) > 0 {
+		var payload struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(raw, &payload) == nil {
+			if strings.TrimSpace(payload.Error) != "" {
+				msg = strings.TrimSpace(payload.Error)
+			} else if strings.TrimSpace(payload.Message) != "" {
+				msg = strings.TrimSpace(payload.Message)
+			}
+		}
+	}
+	if msg == "" {
+		msg = fallback
+	}
+	return fmt.Errorf("%s: %s", res.Status, msg)
+}
+
 func ensureBackend(c *http.Client, base, dir, apiToken string) tea.Cmd {
 	return func() tea.Msg {
 		if health(c, base) == nil {
@@ -232,6 +257,9 @@ func getChats(c *http.Client, base string) tea.Cmd {
 			return chatsMsg{err: err}
 		}
 		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return chatsMsg{err: apiErrorFromResponse(res, "failed to load chats")}
+		}
 		var out struct {
 			Chats []chat `json:"chats"`
 		}
@@ -250,6 +278,9 @@ func getContacts(c *http.Client, base string) tea.Cmd {
 			return contactsMsg{err: err}
 		}
 		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return contactsMsg{err: apiErrorFromResponse(res, "failed to load contacts")}
+		}
 		var out struct {
 			Contacts []contact `json:"contacts"`
 		}
@@ -269,6 +300,9 @@ func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
 			return msgsMsg{chatID: chatID, err: err}
 		}
 		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return msgsMsg{chatID: chatID, err: apiErrorFromResponse(res, "failed to load messages")}
+		}
 		var out struct {
 			Messages []wireMsg `json:"messages"`
 		}
@@ -373,6 +407,9 @@ func getWhitelist(c *http.Client, base string) tea.Cmd {
 			return whitelistLoadMsg{err: err}
 		}
 		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return whitelistLoadMsg{err: apiErrorFromResponse(res, "failed to load whitelist")}
+		}
 		var out struct {
 			Contacts []struct {
 				Phone   string `json:"phone"`
@@ -407,11 +444,16 @@ func downloadMedia(c *http.Client, base, chatID, msgID string) tea.Cmd {
 			return mediaDownloadMsg{err: err}
 		}
 		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return mediaDownloadMsg{err: apiErrorFromResponse(res, "failed to download media")}
+		}
 		var out struct {
 			Path  string `json:"path"`
 			Error string `json:"error"`
 		}
-		json.NewDecoder(res.Body).Decode(&out)
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			return mediaDownloadMsg{err: err}
+		}
 		if out.Error != "" {
 			return mediaDownloadMsg{err: fmt.Errorf("%s", out.Error)}
 		}
@@ -445,7 +487,10 @@ func setName(c *http.Client, base, phone, name string) tea.Cmd {
 		if err != nil {
 			return whitelistSetMsg{err: err}
 		}
-		res.Body.Close()
+		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return whitelistSetMsg{err: apiErrorFromResponse(res, "failed to rename contact")}
+		}
 		return whitelistSetMsg{}
 	}
 }
