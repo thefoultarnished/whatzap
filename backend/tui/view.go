@@ -111,8 +111,7 @@ func (x m) View() string {
 		inputSendGap = 1
 	}
 	inputTextAreaW := max(1, rightW-1-inputSendW-inputSendGap)
-	inputContentW := len([]rune(typedInput)) + 2 // " " prefix + text + cursor
-	inputLines := max(1, (inputContentW+inputTextAreaW-1)/inputTextAreaW)
+	inputLines := draftLineCount(typedInput, inputTextAreaW)
 	extraInputH := max(0, inputLines-1)
 
 	replyBar := x.renderReplyBar(contentW, rightW)
@@ -382,7 +381,22 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" ") +
 			lipgloss.NewStyle().Foreground(buttonInk).Background(accent).Render(typedInput)
 	} else {
-		inputDisplay = lipgloss.NewStyle().Foreground(text).Render(" " + typedInput)
+		trailingNL := len(typedInput) - len(strings.TrimRight(typedInput, "\n"))
+		trimmed := strings.TrimRight(typedInput, "\n")
+		lines := strings.Split(trimmed, "\n")
+		for i, l := range lines {
+			lines[i] = " " + l
+		}
+		for i, l := range lines {
+			lines[i] = lipgloss.NewStyle().Foreground(text).Render(l)
+		}
+		inputDisplay = strings.Join(lines, "\n")
+		if trailingNL > 0 {
+			inputDisplay += strings.Repeat("\n", trailingNL)
+			if rightFocused {
+				inputDisplay += " "
+			}
+		}
 		if rightFocused && inputGhost != "" {
 			firstGhost, restGhost := graphemeSplitFirst(inputGhost)
 			if x.cursorOn {
@@ -426,7 +440,11 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		}
 	}
 
-	textRendered := lipgloss.NewStyle().Width(textAreaW).Render(inputDisplay)
+	inputDisplayLines := strings.Split(inputDisplay, "\n")
+	for i, l := range inputDisplayLines {
+		inputDisplayLines[i] = lipgloss.NewStyle().Width(textAreaW).Render(l)
+	}
+	textRendered := strings.Join(inputDisplayLines, "\n")
 	rightContent := textRendered
 	if showSend {
 		rightContent = lipgloss.JoinHorizontal(lipgloss.Top, textRendered, " "+sendBadge)

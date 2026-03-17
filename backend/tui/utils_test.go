@@ -82,6 +82,21 @@ func TestWrapTextWithPrefixReservesFirstLineWidth(t *testing.T) {
 	}
 }
 
+func TestSanitizeOutgoingTextPreservesNewlines(t *testing.T) {
+	got := sanitizeOutgoingText("hello\r\nworld\ragain")
+	want := "hello\nworld\nagain"
+	if got != want {
+		t.Fatalf("sanitizeOutgoingText() = %q, want %q", got, want)
+	}
+}
+
+func TestDraftLineCountCountsExplicitNewlines(t *testing.T) {
+	got := draftLineCount("hello\nworld", 20)
+	if got != 2 {
+		t.Fatalf("draftLineCount() = %d, want 2", got)
+	}
+}
+
 func TestRenderQRStopsGrowingWhenSpaceAllows(t *testing.T) {
 	currentTheme = Monokai
 	rehashStyles()

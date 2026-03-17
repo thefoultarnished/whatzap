@@ -432,7 +432,32 @@ func TestSidebarHighlightInsetAnimatesToOne(t *testing.T) {
 	}
 }
 
-func TestChatEnterAppendsOptimisticOutgoingMessageImmediately(t *testing.T) {
+func TestChatEnterSchedulesDeferredSend(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+		input:     "hello now",
+	}
+
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(m)
+
+	if cmd == nil {
+		t.Fatal("expected deferred send command")
+	}
+	if !got.pendingSendArmed {
+		t.Fatal("expected pending send to be armed")
+	}
+	msgs := got.msgs[got.active]
+	if len(msgs) != 0 {
+		t.Fatalf("optimistic send appended %d messages before timer, want 0", len(msgs))
+	}
+}
+
+func TestDeferredSendCommitsOutgoingMessage(t *testing.T) {
 	model := m{
 		status:    "ready",
 		mode:      "chat",
@@ -443,6 +468,8 @@ func TestChatEnterAppendsOptimisticOutgoingMessageImmediately(t *testing.T) {
 	}
 
 	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	armed := next.(m)
+	next, _ = armed.Update(composerSendMsg{seq: armed.pendingSendSeq})
 	got := next.(m)
 
 	msgs := got.msgs[got.active]
@@ -457,6 +484,147 @@ func TestChatEnterAppendsOptimisticOutgoingMessageImmediately(t *testing.T) {
 	}
 	if body, _ := msgs[0].Message["conversation"].(string); body != "hello now" {
 		t.Fatalf("optimistic message body = %q, want %q", body, "hello now")
+	}
+}
+
+func TestAltEnterAddsComposerNewlineWithoutSending(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+		input:     "hello",
+	}
+
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	got := next.(m)
+
+	if cmd != nil {
+		t.Fatalf("expected no send command, got %#v", cmd)
+	}
+	if got.input != "hello\n" {
+		t.Fatalf("input = %q, want %q", got.input, "hello\n")
+	}
+	if len(got.msgs[got.active]) != 0 {
+		t.Fatalf("expected no optimistic messages, got %d", len(got.msgs[got.active]))
+	}
+}
+
+func TestPastedEnterAddsComposerNewlineWithoutSending(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+		input:     "hello",
+	}
+
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnter, Paste: true})
+	got := next.(m)
+
+	if cmd != nil {
+		t.Fatalf("expected no send command, got %#v", cmd)
+	}
+	if got.input != "hello\n" {
+		t.Fatalf("input = %q, want %q", got.input, "hello\n")
+	}
+	if len(got.msgs[got.active]) != 0 {
+		t.Fatalf("expected no optimistic messages, got %d", len(got.msgs[got.active]))
+	}
+}
+
+func TestChatEnterSendsMultilineDraftAsOneMessage(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+		input:     "hello\nworld",
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	armed := next.(m)
+	next, _ = armed.Update(composerSendMsg{seq: armed.pendingSendSeq})
+	got := next.(m)
+
+	msgs := got.msgs[got.active]
+	if len(msgs) != 1 {
+		t.Fatalf("optimistic send appended %d messages, want 1", len(msgs))
+	}
+	if body, _ := msgs[0].Message["conversation"].(string); body != "hello\nworld" {
+		t.Fatalf("optimistic multiline body = %q, want %q", body, "hello\nworld")
+	}
+}
+
+func TestPasteLikeEnterAfterBulkRunesArmsDeferredSend(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+	got := next.(m)
+	if got.inputBuf == "" {
+		t.Fatalf("expected buffered input after bulk runes")
+	}
+
+	next, cmd := got.key(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(m)
+
+	if cmd == nil {
+		t.Fatal("expected deferred send command")
+	}
+	if !got.pendingSendArmed {
+		t.Fatal("expected pending send to be armed")
+	}
+	if len(got.msgs[got.active]) != 0 {
+		t.Fatalf("expected no messages before deferred send, got %d", len(got.msgs[got.active]))
+	}
+}
+
+func TestPastedMultilineBurstDoesNotSendUntilFinalEnter(t *testing.T) {
+	model := m{
+		status:    "ready",
+		mode:      "chat",
+		active:    "15551230001@s.whatsapp.net",
+		whitelist: map[string]string{"15551230001": "Allowed"},
+		msgs:      map[string][]wireMsg{},
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line one")})
+	state := next.(m)
+	next, _ = state.key(tea.KeyMsg{Type: tea.KeyEnter})
+	state = next.(m)
+	next, _ = state.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line two")})
+	state = next.(m)
+
+	if state.input != "line one\n" {
+		t.Fatalf("input after paste burst = %q, want %q", state.input, "line one\n")
+	}
+	if state.inputBuf != "line two" {
+		t.Fatalf("inputBuf after paste burst = %q, want %q", state.inputBuf, "line two")
+	}
+	if len(state.msgs[state.active]) != 0 {
+		t.Fatalf("expected no messages sent during paste burst, got %d", len(state.msgs[state.active]))
+	}
+
+	next, _ = state.key(tea.KeyMsg{Type: tea.KeyEnter})
+	state = next.(m)
+	next, _ = state.Update(composerSendMsg{seq: state.pendingSendSeq})
+	state = next.(m)
+
+	msgs := state.msgs[state.active]
+	if len(msgs) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(msgs))
+	}
+	if body, _ := msgs[0].Message["conversation"].(string); body != "line one\nline two" {
+		t.Fatalf("sent body = %q, want %q", body, "line one\nline two")
 	}
 }
 

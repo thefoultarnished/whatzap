@@ -1393,7 +1393,7 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ChatID = strings.TrimSpace(req.ChatID)
 	req.ChatID = a.canonicalizeChatID(req.ChatID)
-	req.Text = strings.TrimSpace(sanitizeOutgoingText(req.Text))
+	req.Text = sanitizeOutgoingText(req.Text)
 	if req.ChatID == "" || !hasVisibleText(req.Text) {
 		writeErr(w, http.StatusBadRequest, "chatId and text are required")
 		return
@@ -2811,9 +2811,15 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 }
 
 func sanitizeOutgoingText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
+		if r == '\n' {
+			b.WriteRune(r)
+			continue
+		}
 		if !unicode.IsPrint(r) {
 			continue
 		}

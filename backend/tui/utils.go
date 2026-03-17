@@ -115,9 +115,15 @@ func loadConfig() {
 }
 
 func sanitizeOutgoingText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
+		if r == '\n' {
+			b.WriteRune(r)
+			continue
+		}
 		if !unicode.IsPrint(r) {
 			continue
 		}
@@ -128,6 +134,35 @@ func sanitizeOutgoingText(s string) string {
 
 func hasVisibleText(s string) bool {
 	return strings.TrimSpace(sanitizeOutgoingText(s)) != ""
+}
+
+func appendComposerText(base, extra string) string {
+	if extra == "" {
+		return base
+	}
+	extra = sanitizeOutgoingText(extra)
+	if extra == "" {
+		return base
+	}
+	return base + extra
+}
+
+func draftLineCount(s string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	if s == "" {
+		return 1
+	}
+	lines := 0
+	for _, segment := range strings.Split(s, "\n") {
+		w := runeDisplayWidth(segment) + 1 // account for the leading pad/cursor column
+		if w <= 0 {
+			w = 1
+		}
+		lines += max(1, (w+width-1)/width)
+	}
+	return max(1, lines)
 }
 
 func graphemeCount(s string) int {
@@ -233,6 +268,13 @@ func wrapText(s string, width int) string {
 	if width < 4 {
 		return s
 	}
+	if strings.Contains(s, "\n") {
+		paragraphs := strings.Split(s, "\n")
+		for i, p := range paragraphs {
+			paragraphs[i] = wrapText(p, width)
+		}
+		return strings.Join(paragraphs, "\n")
+	}
 	chunkWord := func(w string) []string {
 		r := []rune(w)
 		var out []string
@@ -320,6 +362,15 @@ func wrapTextWithPrefix(s string, width, prefixWidth int) string {
 	}
 	if width < 4 {
 		return s
+	}
+	if strings.Contains(s, "\n") {
+		paragraphs := strings.Split(s, "\n")
+		result := make([]string, len(paragraphs))
+		result[0] = wrapTextWithPrefix(paragraphs[0], width, prefixWidth)
+		for i, p := range paragraphs[1:] {
+			result[i+1] = wrapText(p, width)
+		}
+		return strings.Join(result, "\n")
 	}
 	chunkWord := func(w string, lineWidth int) []string {
 		r := []rune(w)

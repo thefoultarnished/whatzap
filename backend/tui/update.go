@@ -343,11 +343,58 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.inputBuf = ""
 		x.inputFlushScheduled = false
 		return x, nil
+	case composerSendMsg:
+		if !x.pendingSendArmed || v.seq != x.pendingSendSeq {
+			return x, nil
+		}
+		x.pendingSendArmed = false
+		if x.sidebarFocused || x.chatInputLocked() {
+			return x, nil
+		}
+		txt := sanitizeOutgoingText(x.input)
+		x.input = ""
+		if !hasVisibleText(txt) || x.active == "" {
+			return x, nil
+		}
+		if cmd, handled := x.handleSlash(strings.TrimSpace(txt)); handled {
+			return x, cmd
+		}
+		if _, ok := x.whitelist[num(x.active)]; !ok {
+			return x, x.setTopBar("Not whitelisted - use /whitelist to enable")
+		}
+		replyTo := x.replyTo
+		x.replyTo = nil
+		if x.demoMode {
+			return x, demoSend(x.active, txt, replyTo)
+		}
+		pendingID := fmt.Sprintf("local-%d", time.Now().UnixNano())
+		x.msgs[x.active] = append(x.msgs[x.active], optimisticOutgoingMessage(x.active, txt, pendingID, replyTo))
+		if x.mainCache != nil {
+			x.mainCache.result = ""
+		}
+		now := time.Now()
+		for i := range x.chats {
+			if x.chats[i].ID == x.active {
+				x.chats[i].ConversationTimestamp = now.Unix()
+				break
+			}
+		}
+		sort.Slice(x.chats, func(i, j int) bool { return x.chats[i].ConversationTimestamp > x.chats[j].ConversationTimestamp })
+		x.scroll = 0
+		x.msgActivityUntil = time.Now().Add(3 * time.Second)
+		x.msgActivityType = "sent"
+		return x, send(x.client, x.baseURL, x.active, txt, replyTo, pendingID)
 	case tea.KeyMsg:
 		x.lastTypeTime = time.Now()
 		return x.key(v)
 	}
 	return x, nil
+}
+
+func deferComposerSend(seq int) tea.Cmd {
+	return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg {
+		return composerSendMsg{seq: seq}
+	})
 }
 
 func (x m) callBanner(cm callMsg) string {
@@ -664,6 +711,29 @@ func (x *m) clearChatComposer() {
 }
 
 func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	markPasteLikeInput := func() {
+		x.lastPasteLikeAt = time.Now()
+	}
+	recentPasteLikeEnter := func() bool {
+		if x.lastPasteLikeAt.IsZero() {
+			return false
+		}
+		return time.Since(x.lastPasteLikeAt) <= 80*time.Millisecond
+	}
+	cancelPendingSend := func() {
+		x.pendingSendArmed = false
+	}
+	materializePendingSendAsNewline := func() {
+		if !x.pendingSendArmed {
+			return
+		}
+		x.pendingSendArmed = false
+		x.input += x.inputBuf
+		x.inputBuf = ""
+		x.inputFlushScheduled = false
+		x.input = appendComposerText(x.input, "\n")
+		x.inputAllSelected = false
+	}
 	switch k.String() {
 	case "ctrl+c":
 		return x, tea.Quit
@@ -884,6 +954,24 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "chat":
 		inputLocked := x.chatInputLocked()
+		if x.pendingSendArmed {
+			switch k.Type {
+			case tea.KeyRunes:
+				materializePendingSendAsNewline()
+			case tea.KeyCtrlJ:
+				materializePendingSendAsNewline()
+			case tea.KeyBackspace, tea.KeyEsc, tea.KeyTab, tea.KeyUp, tea.KeyDown, tea.KeyCtrlA:
+				cancelPendingSend()
+			case tea.KeyEnter:
+				if k.Paste || k.Alt || recentPasteLikeEnter() {
+					materializePendingSendAsNewline()
+				}
+			default:
+				if len(k.Runes) > 0 {
+					materializePendingSendAsNewline()
+				}
+			}
+		}
 		if x.replyPickMode {
 			cands := x.replyPickCandidates()
 			paneW := max(10, x.w-30)
@@ -1027,6 +1115,16 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if x.scroll > 0 {
 				x.scroll--
 			}
+		case tea.KeyCtrlJ:
+			if x.sidebarFocused || inputLocked {
+				return x, nil
+			}
+			cancelPendingSend()
+			x.input += x.inputBuf
+			x.inputBuf = ""
+			x.inputFlushScheduled = false
+			x.input = appendComposerText(x.input, "\n")
+			x.inputAllSelected = false
 		case tea.KeyCtrlA:
 			if inputLocked {
 				return x, nil
@@ -1041,6 +1139,7 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if x.sidebarFocused || inputLocked {
 				return x, nil
 			}
+			cancelPendingSend()
 			x.input += x.inputBuf
 			x.inputBuf = ""
 			x.inputFlushScheduled = false
@@ -1053,7 +1152,33 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				x.input = graphemeDeleteLast(x.input)
 			}
 		case tea.KeyEnter:
+			if k.Paste {
+				if x.sidebarFocused || inputLocked {
+					return x, nil
+				}
+				x.input += x.inputBuf
+				x.inputBuf = ""
+				x.inputFlushScheduled = false
+				x.input = appendComposerText(x.input, "\n")
+				x.inputAllSelected = false
+				return x, nil
+			}
+			if k.Alt {
+				if x.sidebarFocused || inputLocked {
+					return x, nil
+				}
+				x.input += x.inputBuf
+				x.inputBuf = ""
+				x.inputFlushScheduled = false
+				if x.inputAllSelected {
+					x.input = ""
+				}
+				x.input = appendComposerText(x.input, "\n")
+				x.inputAllSelected = false
+				return x, nil
+			}
 			if x.sidebarFocused {
+				cancelPendingSend()
 				x.sidebarFocused = false
 				return x.openSelectedChat()
 			}
@@ -1063,34 +1188,15 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.input += x.inputBuf
 			x.inputBuf = ""
 			x.inputFlushScheduled = false
-			txt := strings.TrimSpace(x.input)
-			x.input = ""
-			txt = strings.TrimSpace(sanitizeOutgoingText(txt))
-			if !hasVisibleText(txt) || x.active == "" {
+			if !hasVisibleText(x.input) || x.active == "" {
 				return x, nil
 			}
-			if cmd, handled := x.handleSlash(txt); handled {
-				return x, cmd
-			}
-			if _, ok := x.whitelist[num(x.active)]; !ok {
-				return x, x.setTopBar("Not whitelisted - use /whitelist to enable")
-			}
-			replyTo := x.replyTo
-			x.replyTo = nil
-			if x.demoMode {
-				return x, demoSend(x.active, txt, replyTo)
-			}
-			pendingID := fmt.Sprintf("local-%d", time.Now().UnixNano())
-			x.msgs[x.active] = append(x.msgs[x.active], optimisticOutgoingMessage(x.active, txt, pendingID, replyTo))
-			if x.mainCache != nil {
-				x.mainCache.result = ""
-			}
-			x.scroll = 0
-			x.msgActivityUntil = time.Now().Add(3 * time.Second)
-			x.msgActivityType = "sent"
-			return x, send(x.client, x.baseURL, x.active, txt, replyTo, pendingID)
+			x.pendingSendSeq++
+			x.pendingSendArmed = true
+			return x, deferComposerSend(x.pendingSendSeq)
 		default:
 			if x.sidebarFocused {
+				cancelPendingSend()
 				return x, nil
 			}
 			if inputLocked {
@@ -1118,13 +1224,16 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return x, x.setTopBar("No received messages to reply to")
 			}
 			if len(k.Runes) > 0 {
+				if k.Paste || len(k.Runes) > 1 || strings.ContainsRune(string(k.Runes), '\n') || strings.ContainsRune(string(k.Runes), '\r') {
+					markPasteLikeInput()
+				}
 				if x.inputAllSelected {
-					x.input = string(k.Runes)
+					x.input = sanitizeOutgoingText(string(k.Runes))
 					x.inputBuf = ""
 					x.inputFlushScheduled = false
 					x.inputAllSelected = false
 				} else {
-					x.inputBuf += string(k.Runes)
+					x.inputBuf += sanitizeOutgoingText(string(k.Runes))
 					if !x.inputFlushScheduled {
 						x.inputFlushScheduled = true
 						return x, tea.Tick(2*time.Millisecond, func(time.Time) tea.Msg { return flushInputMsg{} })

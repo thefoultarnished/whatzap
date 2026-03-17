@@ -146,6 +146,9 @@ type m struct {
 	lastNotifyAt                             map[string]time.Time
 	lastNotifyGlobal                         time.Time
 	lastTypeTime                             time.Time
+	lastPasteLikeAt                          time.Time
+	pendingSendSeq                           int
+	pendingSendArmed                         bool
 	identityVersion                          int
 	sidebarMarqueeOffset                     int
 	sidebarMarqueePause                      int
@@ -213,6 +216,7 @@ type topBarSetMsg struct{ msg string }
 type cursorBlinkMsg struct{}
 type spinnerTickMsg struct{}
 type flushInputMsg struct{}
+type composerSendMsg struct{ seq int }
 type mediaDownloadMsg struct {
 	path string
 	err  error
