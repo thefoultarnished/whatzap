@@ -241,6 +241,126 @@ var (
 		Background:            "#f9f7f4", // warm linen off-white
 	}
 
+	// Halo — airy porcelain base, powder blue cards, fresh citrus green, and deep cobalt anchors
+	Halo = Theme{
+		Brand:                 "#95B1EE", // powder blue
+		Accent:                "#364C84", // deep cobalt
+		Purple:                "#7f90c7", // soft periwinkle
+		Amber:                 "#E7F1A8", // citrus-lime accent
+		Red:                   "#7d91c9", // muted blue-rose fallback danger
+		Muted:                 "#bfc5d6", // pale stone blue-gray
+		Text:                  "#364C84", // strong cobalt text
+		ImageTag:              "#95B1EE", // powder blue
+		VideoTag:              "#364C84", // deep cobalt
+		AudioTag:              "#E7F1A8", // citrus-lime
+		FileTag:               "#7f90c7", // soft periwinkle
+		StickerTag:            "#95B1EE", // powder blue
+		ContactTag:            "#a7bbef", // lighter blue
+		PollTag:               "#E7F1A8", // citrus-lime
+		LocationTag:           "#6d84bb", // mid cobalt
+		AnomalyTag:            "#364C84", // deep cobalt
+		SentText:              "#364C84", // dark cobalt
+		ReceivedText:          "#4a5f92", // slightly lighter cobalt
+		SentName:              "#95B1EE", // powder blue
+		ReceivedName:          "#364C84", // deep cobalt
+		QuotedSentText:        "#7f90c7", // muted periwinkle
+		QuotedReceivedText:    "#6d7ea8", // subdued cobalt
+		BadgeInk:              "#FFFDF5", // porcelain white
+		ButtonInk:             "#FFFDF5", // porcelain white
+		TagInk:                "#364C84", // deep cobalt on light tags
+		Cursor:                "#364C84", // deep cobalt
+		QRLight:               "#FFFDF5", // porcelain base
+		QRDark:                "#364C84", // deep cobalt
+		ShortcutActive:        "#eef2fb", // cool white-blue
+		SidebarActiveBg:       "#e8eefc", // pale powder-blue wash
+		SidebarActiveUnreadBg: "#f1f5da", // pale citrus wash
+		ReplyPreviewBg:        "#f3f6fe", // soft porcelain-blue
+		MessageSelectedBg:     "#e6ecfb", // powder-blue selection
+		MediaTokenBg:          "#95B1EE", // powder blue
+		MediaTokenPulseBg:     "#E7F1A8", // citrus pulse
+		Background:            "#FFFDF5", // porcelain white
+	}
+
+	// Cornflower — deep cobalt canvas, porcelain contrast, powder-blue surfaces, and citrus highlights
+	Cornflower = Theme{
+		Brand:                 "#95B1EE", // powder blue highlight
+		Accent:                "#E7F1A8", // citrus-lime accent
+		Purple:                "#c8d4f6", // frosted blue-lilac
+		Amber:                 "#FFFDF5", // porcelain light
+		Red:                   "#7e95cc", // softened alert blue-violet
+		Muted:                 "#8ea2d7", // muted cornflower
+		Text:                  "#FFFDF5", // porcelain text
+		ImageTag:              "#95B1EE", // powder blue
+		VideoTag:              "#E7F1A8", // citrus-lime
+		AudioTag:              "#FFFDF5", // porcelain
+		FileTag:               "#c8d4f6", // pale frosted blue
+		StickerTag:            "#95B1EE", // powder blue
+		ContactTag:            "#d7e1fb", // pale ice-blue
+		PollTag:               "#E7F1A8", // citrus-lime
+		LocationTag:           "#cbd7f8", // pale blue
+		AnomalyTag:            "#FFFDF5", // porcelain alert
+		SentText:              "#E7F1A8", // citrus-lime outgoing text
+		ReceivedText:          "#FFFDF5", // porcelain incoming text
+		SentName:              "#E7F1A8", // citrus marker
+		ReceivedName:          "#95B1EE", // powder blue
+		QuotedSentText:        "#d9e4b3", // subdued lime-white
+		QuotedReceivedText:    "#d5def8", // subdued frosted blue
+		BadgeInk:              "#364C84", // deep cobalt
+		ButtonInk:             "#364C84", // deep cobalt
+		TagInk:                "#364C84", // deep cobalt
+		Cursor:                "#FFFDF5", // porcelain cursor
+		QRLight:               "#FFFDF5", // porcelain
+		QRDark:                "#364C84", // cobalt
+		ShortcutActive:        "#536aa3", // lighter cobalt chip
+		SidebarActiveBg:       "#4b629d", // raised cobalt active
+		SidebarActiveUnreadBg: "#5b74b0", // brighter unread blue
+		ReplyPreviewBg:        "#4a6099", // cobalt panel
+		MessageSelectedBg:     "#556ca7", // selected cobalt
+		MediaTokenBg:          "#95B1EE", // powder blue token
+		MediaTokenPulseBg:     "#E7F1A8", // citrus pulse
+		Background:            "#364C84", // source palette dark blue
+	}
+
+	// WhatsApp — classic WhatsApp greens on a dark app shell with the familiar outgoing bubble tint
+	WhatsApp = Theme{
+		Brand:                 "#25D366", // WhatsApp green
+		Accent:                "#128C7E", // classic WhatsApp dark teal
+		Purple:                "#34B7F1", // WhatsApp blue
+		Amber:                 "#F0B429", // warm amber for counts and alerts
+		Red:                   "#E57373", // soft alert red that fits the palette
+		Muted:                 "#8696A0", // WhatsApp-style muted gray
+		Text:                  "#E9EDEF", // dark theme foreground
+		ImageTag:              "#25D366", // WhatsApp green
+		VideoTag:              "#128C7E", // dark teal
+		AudioTag:              "#34B7F1", // WhatsApp blue
+		FileTag:               "#7AE582", // lighter green
+		StickerTag:            "#7D8DFF", // cool indigo accent
+		ContactTag:            "#5AC8A8", // aqua-green
+		PollTag:               "#F0B429", // amber
+		LocationTag:           "#34B7F1", // blue
+		AnomalyTag:            "#25D366", // keep header chip on-brand
+		SentText:              "#DCF8C6", // iconic sent bubble tint
+		ReceivedText:          "#E9EDEF", // dark theme received text
+		SentName:              "#25D366", // "me" label
+		ReceivedName:          "#34B7F1", // "them" label
+		QuotedSentText:        "#9FC49A", // dimmed sent bubble tint
+		QuotedReceivedText:    "#AEB8BF", // dimmed foreground tint
+		BadgeInk:              "#0B141A",
+		ButtonInk:             "#0B141A",
+		TagInk:                "#0B141A",
+		Cursor:                "#25D366", // WhatsApp green cursor
+		QRLight:               "#FFFFFF",
+		QRDark:                "#0B141A",
+		ShortcutActive:        "#202C33", // dark app chrome
+		SidebarActiveBg:       "#202C33", // WhatsApp dark list selection
+		SidebarActiveUnreadBg: "#1F3A33", // green-tinted dark selection
+		ReplyPreviewBg:        "#111B21", // dark app panel
+		MessageSelectedBg:     "#1A2A2F", // slightly lifted dark selection
+		MediaTokenBg:          "#128C7E", // WhatsApp dark teal
+		MediaTokenPulseBg:     "#25D366", // pulse with the brand green
+		Background:            "#0B141A", // WhatsApp dark app background
+	}
+
 	// TokyoNight — deep navy #1a1b26 bg, cool blue-purple chrome, warm green/cyan accents
 	TokyoNight = Theme{
 		Brand:                 "#9ece6a", // official Tokyo Night green
@@ -472,10 +592,10 @@ var (
 		QRLight:               "#FFFFFF",
 		QRDark:                "#1a0d14",
 		ShortcutActive:        "#231019",
-		SidebarActiveBg:       "#3d1f35",  // rich plum — active
-		SidebarActiveUnreadBg: "#2a1020",  // clearly darker plum — unread, distinct from active
-		ReplyPreviewBg:        "#4a1d3f",  // deep plum reply context
-		MessageSelectedBg:     "#351430",  // deep burgundy selection
+		SidebarActiveBg:       "#3d1f35", // rich plum — active
+		SidebarActiveUnreadBg: "#2a1020", // clearly darker plum — unread, distinct from active
+		ReplyPreviewBg:        "#4a1d3f", // deep plum reply context
+		MessageSelectedBg:     "#351430", // deep burgundy selection
 		MediaTokenBg:          "#db2777",
 		MediaTokenPulseBg:     "#f472b6",
 		Background:            "#1a0d14",

@@ -911,15 +911,17 @@ func themeCommandBestMatch(in string) string {
 	case strings.HasPrefix("/theme", in) && in != "/theme":
 		return "/theme"
 	case in == "/theme":
-		return "/theme1tokyonight"
-	case strings.HasPrefix(in, "/theme1") && in != "/theme1tokyonight":
-		return "/theme1tokyonight"
-	case strings.HasPrefix(in, "/theme2") && in != "/theme2catppuccin":
-		return "/theme2catppuccin"
-	case strings.HasPrefix(in, "/theme3") && in != "/theme3monokai":
-		return "/theme3monokai"
-	case strings.HasPrefix(in, "/theme4") && in != "/theme4charcoal":
-		return "/theme4charcoal"
+		if len(themeList) == 0 {
+			return ""
+		}
+		return "/theme1" + themeList[0].name
+	}
+	for i, t := range themeList {
+		prefix := fmt.Sprintf("/theme%d", i+1)
+		full := prefix + t.name
+		if strings.HasPrefix(in, prefix) && in != full {
+			return full
+		}
 	}
 	return ""
 }

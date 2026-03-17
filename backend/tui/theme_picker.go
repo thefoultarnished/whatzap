@@ -13,6 +13,9 @@ var themeList = []struct {
 	displayName string
 	theme       Theme
 }{
+	{"halo", "Halo", Halo},
+	{"cornflower", "Cornflower", Cornflower},
+	{"whatsapp", "WhatsApp", WhatsApp},
 	{"linen", "Linen", Linen},
 	{"tokyonight", "Tokyo Night", TokyoNight},
 	{"catppuccin", "Catppuccin", Catppuccin},
