@@ -160,6 +160,8 @@ func (x m) View() string {
 	var main string
 	if x.themePickerOpen {
 		main = x.renderThemePickerPane(rightW, mainH)
+	} else if x.pointerPickerOpen {
+		main = x.renderPointerPickerPane(rightW, mainH)
 	} else if x.emojiPickerOpen {
 		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
@@ -849,9 +851,14 @@ func (x m) renderMain(w, h int) string {
 			continue
 		}
 
+		isGroup := strings.HasSuffix(x.active, "@g.us")
 		availableW := chatMessageWrapWidth(w, msgBody)
 
-		wrapped := wrapMessageLines(msgBody, availableW, msg.Key.FromMe, senderName)
+		wrappedSender := senderName
+		if !isGroup {
+			wrappedSender = receivedMsgIcon
+		}
+		wrapped := wrapMessageLines(msgBody, availableW, msg.Key.FromMe, wrappedSender)
 
 		bodyColor := sentText
 		if !msg.Key.FromMe {
@@ -1048,11 +1055,20 @@ func (x m) renderMain(w, h int) string {
 				Background(mediaTokenBG).
 				Bold(true))
 			lineParts := []string{}
-			if !msg.Key.FromMe && i == 0 {
+			if !msg.Key.FromMe && i == 0 && isGroup {
 				lineParts = append(lineParts, applyBodyBG(lipgloss.NewStyle().
 					Foreground(receivedName).
 					Bold(true)).
 					Render(senderName+": "))
+			} else if !msg.Key.FromMe && i == 0 && !isGroup {
+				lineParts = append(lineParts, applyBodyBG(lipgloss.NewStyle().
+					Foreground(receivedName)).
+					Render(receivedMsgIcon+" "))
+			} else if !msg.Key.FromMe && i > 0 && !isGroup {
+				iconPad := strings.Repeat(" ", runeDisplayWidth(receivedMsgIcon+" "))
+				lineParts = append(lineParts, applyBodyBG(lipgloss.NewStyle().
+					Foreground(receivedName)).
+					Render(iconPad))
 			}
 			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg))
 			if msg.Key.FromMe && i == len(wrapped)-1 {
@@ -1079,8 +1095,10 @@ func (x m) renderMain(w, h int) string {
 				}
 			}
 			lastBodyPlainW = runeDisplayWidth(ln)
-			if !msg.Key.FromMe && i == 0 {
+			if !msg.Key.FromMe && i == 0 && isGroup {
 				lastBodyPlainW += runeDisplayWidth(senderName + ": ")
+			} else if !msg.Key.FromMe && !isGroup {
+				lastBodyPlainW += runeDisplayWidth(receivedMsgIcon + " ")
 			}
 			block = append(block, bodyContent)
 		}

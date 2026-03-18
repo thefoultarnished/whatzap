@@ -112,6 +112,9 @@ func loadConfig() {
 		_ = json.Unmarshal(data, &currentConfig)
 	}
 	currentConfig.SoundProfile = normalizeSoundProfile(currentConfig.SoundProfile)
+	if currentConfig.PointerIcon != "" {
+		receivedMsgIcon = currentConfig.PointerIcon
+	}
 }
 
 func sanitizeOutgoingText(s string) string {

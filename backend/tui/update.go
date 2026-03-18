@@ -866,6 +866,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if x.themePickerOpen {
 		return x.handleThemePicker(k)
 	}
+	if x.pointerPickerOpen {
+		return x.handlePointerPicker(k)
+	}
 	if x.emojiPickerOpen {
 		return x.handleEmojiPicker(k)
 	}
@@ -1493,6 +1496,9 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		return nil, true
 	case txt == "/theme":
 		x.openThemePicker()
+		return nil, true
+	case txt == "/pointer":
+		x.openPointerPicker()
 		return nil, true
 	case strings.HasPrefix(txt, "/theme") && txt != "/theme":
 		suffix := txt[len("/theme"):]

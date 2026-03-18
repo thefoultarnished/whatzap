@@ -120,14 +120,15 @@ func TestRenderMainIncomingMessageKeepsBodyColorAfterPrefix(t *testing.T) {
 		Message: map[string]any{"conversation": "hello there"},
 	}
 	msg.Key.ID = "m1"
-	msg.Key.RemoteJID = "15551230001@s.whatsapp.net"
+	msg.Key.RemoteJID = "120363040000001234@g.us"
+	msg.Key.Participant = "15551230001@s.whatsapp.net"
 	msg.MessageTimestamp = 1710000000
 
 	model := m{
 		active:           msg.Key.RemoteJID,
 		msgs:             map[string][]wireMsg{msg.Key.RemoteJID: {msg}},
-		contacts:         map[string]contact{msg.Key.RemoteJID: {ID: msg.Key.RemoteJID, Notify: "annu"}},
-		contactsByNumber: map[string]contact{"15551230001": {ID: msg.Key.RemoteJID, Notify: "annu"}},
+		contacts:         map[string]contact{"15551230001@s.whatsapp.net": {ID: "15551230001@s.whatsapp.net", Notify: "annu"}},
+		contactsByNumber: map[string]contact{"15551230001": {ID: "15551230001@s.whatsapp.net", Notify: "annu"}},
 		whitelist:        map[string]string{},
 		names:            map[string]string{},
 	}

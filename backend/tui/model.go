@@ -58,6 +58,7 @@ type Config struct {
 	MouseEnabled bool   `json:"mouse_enabled"`
 	SoundEnabled bool   `json:"sound_enabled"`
 	SoundProfile int    `json:"sound_profile"`
+	PointerIcon  string `json:"pointer_icon,omitempty"`
 }
 
 var currentConfig Config
@@ -135,6 +136,9 @@ type m struct {
 	themePickerOpen                          bool
 	themePickerIdx                           int
 	themePickerOriginal                      string
+	pointerPickerOpen                        bool
+	pointerPickerIdx                         int
+	pointerPickerOriginal                    string
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int

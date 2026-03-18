@@ -75,7 +75,7 @@ var (
 func init() {
 	cmds := []string{
 		"/synccontacts", "/syncgroups", "/whitelist", "/whitelistall", "/blacklist", "/blacklistall", "/rename", "/logout", "/restart", "/exit",
-		"/theme",
+		"/theme", "/pointer",
 	}
 	for i, t := range themeList {
 		cmds = append(cmds, fmt.Sprintf("/theme%d%s", i+1, t.name))
@@ -107,6 +107,8 @@ var (
 	cursorStyle      = lipgloss.NewStyle().Foreground(cursorColor).Background(cursorColor)
 	inputCursorStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	inputCursorGlyph = "█"
+
+	receivedMsgIcon = "✦"
 
 	sidebarStyle = lipgloss.NewStyle().
 			Padding(0, 1).
