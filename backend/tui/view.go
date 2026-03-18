@@ -158,10 +158,10 @@ func (x m) View() string {
 		inputH:       extraInputH,
 	}
 	var main string
-	if x.themePickerOpen {
-		main = x.renderThemePickerPane(rightW, mainH)
-	} else if x.pointerPickerOpen {
-		main = x.renderPointerPickerPane(rightW, mainH)
+	if x.themePicker.open {
+		main = x.themePicker.Render(rightW, mainH)
+	} else if x.pointerPicker.open {
+		main = x.pointerPicker.Render(rightW, mainH)
 	} else if x.emojiPickerOpen {
 		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {

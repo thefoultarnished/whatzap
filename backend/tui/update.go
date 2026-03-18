@@ -863,11 +863,34 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if x.status != "ready" {
 		return x, nil
 	}
-	if x.themePickerOpen {
-		return x.handleThemePicker(k)
+	if x.themePicker.open {
+		action, done := x.themePicker.Handle(k)
+		if !done {
+			applyThemeByName(x.themePicker.SelectedKey())
+			x.mainCache.result = ""
+		} else if action == "confirm" {
+			applyThemeByName(x.themePicker.Close(true))
+			saveConfig()
+		} else {
+			applyThemeByName(x.themePicker.Close(false))
+			x.mainCache.result = ""
+		}
+		return x, nil
 	}
-	if x.pointerPickerOpen {
-		return x.handlePointerPicker(k)
+	if x.pointerPicker.open {
+		action, done := x.pointerPicker.Handle(k)
+		if !done {
+			receivedMsgIcon = x.pointerPicker.SelectedKey()
+			x.mainCache.result = ""
+		} else if action == "confirm" {
+			receivedMsgIcon = x.pointerPicker.Close(true)
+			currentConfig.PointerIcon = receivedMsgIcon
+			saveConfig()
+		} else {
+			receivedMsgIcon = x.pointerPicker.Close(false)
+			x.mainCache.result = ""
+		}
+		return x, nil
 	}
 	if x.emojiPickerOpen {
 		return x.handleEmojiPicker(k)
@@ -1495,10 +1518,16 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		x.openEmojiPicker()
 		return nil, true
 	case txt == "/theme":
-		x.openThemePicker()
+		x.themePicker.Open(currentConfig.ThemeName)
+		x.leftInput = ""
+		x.leftInputFocused = false
+		x.mainCache.result = ""
 		return nil, true
 	case txt == "/pointer":
-		x.openPointerPicker()
+		x.pointerPicker.Open(receivedMsgIcon)
+		x.leftInput = ""
+		x.leftInputFocused = false
+		x.mainCache.result = ""
 		return nil, true
 	case strings.HasPrefix(txt, "/theme") && txt != "/theme":
 		suffix := txt[len("/theme"):]

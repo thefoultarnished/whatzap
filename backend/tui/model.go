@@ -133,12 +133,8 @@ type m struct {
 	leftInput                                string
 	leftInputFocused                         bool
 	emojiPickerOpen                          bool
-	themePickerOpen                          bool
-	themePickerIdx                           int
-	themePickerOriginal                      string
-	pointerPickerOpen                        bool
-	pointerPickerIdx                         int
-	pointerPickerOriginal                    string
+	themePicker                              picker
+	pointerPicker                            picker
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int

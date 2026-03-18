@@ -61,6 +61,8 @@ func main() {
 			mouseEnabled:        currentConfig.MouseEnabled,
 			sidebarCache:        &sidebarCache{},
 			mainCache:           &renderCache{},
+			themePicker:         picker{title: "Select Theme", items: buildThemePickerItems()},
+			pointerPicker:       picker{title: "Select Pointer Icon", items: buildPointerPickerItems()},
 		}
 		if demoMode {
 			model.status = "Starting demo..."
