@@ -899,13 +899,13 @@ func (x m) renderMain(w, h int) string {
 			return st
 		}
 
-		timeStyled := applyBodyBG(mutedStyle.Copy().Foreground(timeColor)).Render("  " + timeStr)
+		timeStyled := mutedStyle.Copy().Foreground(timeColor).Render("  " + timeStr)
 		if receiptText != "" {
 			receiptColor := muted
 			if msg.ReceiptStatus == "read" || msg.ReceiptStatus == "played" {
 				receiptColor = accent
 			}
-			timeStyled += applyBodyBG(mutedStyle.Copy().Foreground(receiptColor).Bold(true)).Render(receiptText)
+			timeStyled += mutedStyle.Copy().Foreground(receiptColor).Bold(true).Render(receiptText)
 		}
 		block := []string{}
 		hasQuoteLine := false
@@ -1086,7 +1086,7 @@ func (x m) renderMain(w, h int) string {
 				lineParts = append(lineParts, timeStyled)
 			}
 			if msg.Key.FromMe {
-				lineParts = append(lineParts, bodyStyle.Render(" "))
+				lineParts = append(lineParts, " ")
 			}
 			bodyContent := strings.Join(lineParts, "")
 			if msg.Key.FromMe {
@@ -1109,7 +1109,7 @@ func (x m) renderMain(w, h int) string {
 			lastW := runeDisplayWidth(wrapped[len(wrapped)-1] + " ")
 			if lastW+timeSuffixW > outgoingBlockW {
 				pad := max(0, outgoingBlockW-timeSuffixW)
-				timeLine := indent + strings.Repeat(" ", pad) + timeStyled + applyBodyBG(lipgloss.NewStyle().Foreground(bodyColor)).Render(" ")
+				timeLine := indent + strings.Repeat(" ", pad) + timeStyled + " "
 				block = append(block, timeLine)
 			}
 		}
