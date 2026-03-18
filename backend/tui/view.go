@@ -695,6 +695,8 @@ func renderStyledMessageText(
 	return bodyStyle.Render(ln)
 }
 
+
+
 func outgoingMessageIndent(paneW int, blockW int, fromMe bool) string {
 	if !fromMe {
 		return ""
@@ -876,25 +878,21 @@ func (x m) renderMain(w, h int) string {
 		}
 
 		isClickedSelected := x.selectedMsgID != "" && msg.Key.ID == x.selectedMsgID
-		selectedBG := lipgloss.Color("")
-		if isClickedSelected && !x.replyPickMode {
-			selectedBG = messageSelectedBg
-		}
-		bodyBG := lipgloss.Color("")
+		selectColor := lipgloss.Color("")
 		if isClickedSelected && x.replyPickMode {
-			bodyBG = accent
+			selectColor = accent
 		} else if isClickedSelected {
-			bodyBG = messageSelectedBg
+			selectColor = brand
 		}
 		applySelectedBG := func(st lipgloss.Style) lipgloss.Style {
-			if selectedBG != "" {
-				return st.Background(selectedBG)
+			if selectColor != "" {
+				return st.Foreground(selectColor)
 			}
 			return st
 		}
 		applyBodyBG := func(st lipgloss.Style) lipgloss.Style {
-			if bodyBG != "" {
-				return st.Background(bodyBG)
+			if selectColor != "" {
+				return st.Foreground(selectColor)
 			}
 			return st
 		}
@@ -1123,12 +1121,6 @@ func (x m) renderMain(w, h int) string {
 			block = append(block, reactionLine)
 		}
 
-		if selectedBG != "" && !x.replyPickMode {
-			hlStyle := lipgloss.NewStyle().Background(selectedBG)
-			for i, ln := range block {
-				block[i] = hlStyle.Render(ln)
-			}
-		}
 		timeLine := len(wrapped)
 		if hasQuoteLine {
 			timeLine++
