@@ -63,6 +63,7 @@ func main() {
 			mainCache:           &renderCache{},
 			themePicker:         picker{title: "Select Theme", items: buildThemePickerItems()},
 			pointerPicker:       picker{title: "Select Pointer Icon", items: buildPointerPickerItems()},
+			helpPicker:          picker{title: "Commands", items: buildHelpPickerItems()},
 		}
 		if demoMode {
 			model.status = "Starting demo..."

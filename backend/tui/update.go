@@ -892,6 +892,14 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return x, nil
 	}
+	if x.helpPicker.open {
+		_, done := x.helpPicker.Handle(k)
+		if done {
+			x.helpPicker.Close(false)
+			x.mainCache.result = ""
+		}
+		return x, nil
+	}
 	if x.emojiPickerOpen {
 		return x.handleEmojiPicker(k)
 	}
@@ -1052,6 +1060,19 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 					x.scroll = 0
 					x.mainCache.result = ""
 					return x, nil
+				}
+				if k.String() == "o" {
+					cp := cands[x.replyPickIndex]
+					if cp.MediaProto != "" {
+						x.replyPickMode = false
+						x.selectedMsgID = ""
+						x.mainCache.result = ""
+						return x, tea.Batch(
+							x.setTopBar("Opening media..."),
+							downloadMedia(x.client, x.baseURL, x.active, cp.Key.ID),
+						)
+					}
+					return x, x.setTopBar("No media on this message")
 				}
 				return x, nil
 			}
@@ -1525,6 +1546,12 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		return nil, true
 	case txt == "/pointer":
 		x.pointerPicker.Open(receivedMsgIcon)
+		x.leftInput = ""
+		x.leftInputFocused = false
+		x.mainCache.result = ""
+		return nil, true
+	case txt == "/help":
+		x.helpPicker.Open("")
 		x.leftInput = ""
 		x.leftInputFocused = false
 		x.mainCache.result = ""

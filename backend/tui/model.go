@@ -135,6 +135,7 @@ type m struct {
 	emojiPickerOpen                          bool
 	themePicker                              picker
 	pointerPicker                            picker
+	helpPicker                               picker
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int

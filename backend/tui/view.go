@@ -116,8 +116,8 @@ func (x m) View() string {
 
 	replyBar := x.renderReplyBar(contentW, rightW)
 
-	// Left column: sidebar + command box — height is independent of input wrapping.
-	sideH := outerH - 4 - replyBarH
+	// Left column: sidebar + command box.
+	sideH := outerH - 4
 	side := x.renderSide(leftW, sideH)
 	cmdBox := x.renderCommandBox(leftW)
 	leftCol := lipgloss.JoinVertical(lipgloss.Left, side, cmdBox)
@@ -162,6 +162,8 @@ func (x m) View() string {
 		main = x.themePicker.Render(rightW, mainH)
 	} else if x.pointerPicker.open {
 		main = x.pointerPicker.Render(rightW, mainH)
+	} else if x.helpPicker.open {
+		main = x.helpPicker.Render(rightW, mainH)
 	} else if x.emojiPickerOpen {
 		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
