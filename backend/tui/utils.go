@@ -294,17 +294,19 @@ func wrapText(s string, width int) string {
 		}
 		return out
 	}
-	words := strings.Fields(s)
+	trimmed := strings.TrimLeft(s, " ")
+	leading := strings.Repeat(" ", len(s)-len(trimmed))
+	words := strings.Fields(trimmed)
 	if len(words) == 0 {
-		return ""
+		return s
 	}
 	lines := make([]string, 0, 4)
-	cur := ""
+	cur := leading
 	for _, w := range words {
 		chunks := chunkWord(w)
 		for _, chunk := range chunks {
-			if cur == "" {
-				cur = chunk
+			if cur == "" || cur == leading && runeDisplayWidth(cur)+runeDisplayWidth(chunk) <= width {
+				cur += chunk
 				continue
 			}
 			if runeDisplayWidth(cur)+1+runeDisplayWidth(chunk) <= width {
