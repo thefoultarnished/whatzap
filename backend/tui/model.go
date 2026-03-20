@@ -24,6 +24,7 @@ type mainCacheKey struct {
 	identityVer  int
 	spinnerFrame int
 	inputH       int
+	pulseOn      bool
 }
 type renderCache struct {
 	key    mainCacheKey

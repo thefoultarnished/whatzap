@@ -156,6 +156,7 @@ func (x m) View() string {
 		identityVer:  x.identityVersion,
 		spinnerFrame: x.spinnerFrame,
 		inputH:       extraInputH,
+		pulseOn:      x.replyPickMode && x.pulseOn,
 	}
 	var main string
 	if x.themePicker.open {
@@ -880,19 +881,30 @@ func (x m) renderMain(w, h int) string {
 		isClickedSelected := x.selectedMsgID != "" && msg.Key.ID == x.selectedMsgID
 		selectColor := lipgloss.Color("")
 		if isClickedSelected && x.replyPickMode {
-			selectColor = accent
+			if x.pulseOn {
+				selectColor = accent
+			} else {
+				selectColor = lipgloss.Color(blendHex(string(accent), string(muted), 0.45))
+			}
 		} else if isClickedSelected {
 			selectColor = brand
 		}
+		replySelected := isClickedSelected && x.replyPickMode
 		applySelectedBG := func(st lipgloss.Style) lipgloss.Style {
 			if selectColor != "" {
-				return st.Foreground(selectColor)
+				st = st.Foreground(selectColor)
+				if replySelected {
+					st = st.Bold(true)
+				}
 			}
 			return st
 		}
 		applyBodyBG := func(st lipgloss.Style) lipgloss.Style {
 			if selectColor != "" {
-				return st.Foreground(selectColor)
+				st = st.Foreground(selectColor)
+				if replySelected {
+					st = st.Bold(true)
+				}
 			}
 			return st
 		}
@@ -1124,6 +1136,14 @@ func (x m) renderMain(w, h int) string {
 		timeLine := len(wrapped)
 		if hasQuoteLine {
 			timeLine++
+		}
+		if replySelected && len(block) > 0 {
+			marker := lipgloss.NewStyle().Foreground(selectColor).Bold(true).Render("│ ")
+			if x.pulseOn {
+				block[0] = marker + block[0]
+			} else {
+				block[0] = "  " + block[0]
+			}
 		}
 		msgBlocks = append(msgBlocks, block)
 		msgTimestamps = append(msgTimestamps, msg.MessageTimestamp)

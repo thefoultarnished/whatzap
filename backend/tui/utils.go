@@ -1081,6 +1081,31 @@ func detectMediaSendKind(path string) (string, error) {
 	return "document", nil
 }
 
+// blendHex linearly interpolates between two "#RRGGBB" colors by t (0.0–1.0).
+func blendHex(a, b string, t float64) string {
+	parse := func(h string) (int, int, int) {
+		if len(h) == 7 && h[0] == '#' {
+			var r, g, bb int
+			fmt.Sscanf(h, "#%02x%02x%02x", &r, &g, &bb)
+			return r, g, bb
+		}
+		return 0, 0, 0
+	}
+	r1, g1, b1 := parse(a)
+	r2, g2, b2 := parse(b)
+	mix := func(c1, c2 int) int {
+		v := float64(c1) + t*(float64(c2)-float64(c1))
+		if v < 0 {
+			v = 0
+		}
+		if v > 255 {
+			v = 255
+		}
+		return int(v)
+	}
+	return fmt.Sprintf("#%02x%02x%02x", mix(r1, r2), mix(g1, g2), mix(b1, b2))
+}
+
 func dateSeparatorLine(label string, w int) string {
 	if label == "" {
 		return ""
