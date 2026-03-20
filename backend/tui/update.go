@@ -141,6 +141,23 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "typing":
+			var tm struct {
+				ChatID string `json:"chatId"`
+				Sender string `json:"sender"`
+				State  string `json:"state"`
+			}
+			if err := json.Unmarshal(v.evt.Payload, &tm); err == nil {
+				if x.typingChats == nil {
+					x.typingChats = map[string]time.Time{}
+				}
+				if tm.State == "composing" {
+					x.typingChats[tm.ChatID] = time.Now()
+				} else {
+					delete(x.typingChats, tm.ChatID)
+				}
+				x.mainCache.result = ""
+			}
 		case "call":
 			var cm callMsg
 			if err := json.Unmarshal(v.evt.Payload, &cm); err == nil {
@@ -187,6 +204,11 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, until := range x.flashUntil {
 			if !until.After(now) {
 				delete(x.flashUntil, id)
+			}
+		}
+		for chatID, since := range x.typingChats {
+			if now.Sub(since) > 15*time.Second {
+				delete(x.typingChats, chatID)
 			}
 		}
 		return x, nextCursorBlink()
@@ -383,10 +405,26 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.scroll = 0
 		x.msgActivityUntil = time.Now().Add(3 * time.Second)
 		x.msgActivityType = "sent"
-		return x, send(x.client, x.baseURL, x.active, txt, replyTo, pendingID)
+		sendCmd := send(x.client, x.baseURL, x.active, txt, replyTo, pendingID)
+		if x.lastComposingChat != "" && !x.demoMode {
+			pauseCmd := postJSON(x.client, x.baseURL+"/typing", map[string]string{"chatId": x.lastComposingChat, "state": "paused"}, nil)
+			x.lastComposingChat = ""
+			return x, tea.Batch(sendCmd, pauseCmd)
+		}
+		x.lastComposingChat = ""
+		return x, sendCmd
 	case tea.KeyMsg:
 		x.lastTypeTime = time.Now()
-		return x.key(v)
+		mdl, cmd := x.key(v)
+		// Send composing indicator when typing in chat mode
+		if x.mode == "chat" && x.active != "" && !x.demoMode && x.lastComposingChat != x.active {
+			inp := x.input + x.inputBuf
+			if inp != "" {
+				x.lastComposingChat = x.active
+				cmd = tea.Batch(cmd, postJSON(x.client, x.baseURL+"/typing", map[string]string{"chatId": x.active, "state": "composing"}, nil))
+			}
+		}
+		return mdl, cmd
 	}
 	return x, nil
 }
@@ -1074,6 +1112,49 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					return x, x.setTopBar("No media on this message")
 				}
+				if k.String() == "e" {
+					cp := cands[x.replyPickIndex]
+					x.reactPickMode = true
+					x.reactPickMsgID = cp.Key.ID
+					x.reactPickChatID = x.active
+					x.reactPickSender = cp.Key.Participant
+					if x.reactPickSender == "" {
+						x.reactPickSender = cp.Key.RemoteJID
+					}
+					if cp.Key.FromMe {
+						x.reactPickSender = ""
+					}
+					x.replyPickMode = false
+					x.selectedMsgID = ""
+					x.mainCache.result = ""
+					x.openEmojiPicker()
+					return x, nil
+				}
+				if k.String() == "d" {
+					cp := cands[x.replyPickIndex]
+					if !cp.Key.FromMe {
+						return x, x.setTopBar("Can only delete your own messages")
+					}
+					x.replyPickMode = false
+					x.selectedMsgID = ""
+					x.mainCache.result = ""
+					// Remove from local state immediately
+					if msgs, ok := x.msgs[x.active]; ok {
+						for i, msg := range msgs {
+							if msg.Key.ID == cp.Key.ID {
+								x.msgs[x.active] = append(msgs[:i], msgs[i+1:]...)
+								break
+							}
+						}
+					}
+					return x, tea.Batch(
+						x.setTopBar("Message deleted"),
+						postJSON(x.client, x.baseURL+"/messages/delete", map[string]string{
+							"chatId":    x.active,
+							"messageId": cp.Key.ID,
+						}, nil),
+					)
+				}
 				return x, nil
 			}
 		}
@@ -1249,27 +1330,6 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if inputLocked {
 				return x, nil
 			}
-			if k.String() == "r" && x.input == "" && x.active != "" {
-				if x.selectedMsgID != "" {
-					for i := range x.msgs[x.active] {
-						if x.msgs[x.active][i].Key.ID == x.selectedMsgID {
-							cp := x.msgs[x.active][i]
-							x.replyTo = &cp
-							x.selectedMsgID = ""
-							return x, nil
-						}
-					}
-				}
-				msgs := x.msgs[x.active]
-				for i := len(msgs) - 1; i >= 0; i-- {
-					if !msgs[i].Key.FromMe {
-						cp := msgs[i]
-						x.replyTo = &cp
-						return x, nil
-					}
-				}
-				return x, x.setTopBar("No received messages to reply to")
-			}
 			if len(k.Runes) > 0 {
 				if k.Paste || len(k.Runes) > 1 || strings.ContainsRune(string(k.Runes), '\n') || strings.ContainsRune(string(k.Runes), '\r') {
 					markPasteLikeInput()
@@ -1313,7 +1373,62 @@ func (x m) handleEmojiPicker(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyEsc:
 		x.closeEmojiPicker()
+		x.reactPickMode = false
+		x.reactPickMsgID = ""
 	case tea.KeyEnter:
+		if x.reactPickMode {
+			results := x.emojiResults()
+			if len(results) == 0 {
+				return x, x.setTopBar("No emoji selected")
+			}
+			emoji := results[x.emojiSel].Char
+			chatID := x.reactPickChatID
+			msgID := x.reactPickMsgID
+			sender := x.reactPickSender
+			x.closeEmojiPicker()
+			x.reactPickMode = false
+			x.reactPickMsgID = ""
+			x.reactPickChatID = ""
+			x.reactPickSender = ""
+			// Remove any existing reaction from me on the same target before adding new one
+			if msgs, ok := x.msgs[chatID]; ok {
+				filtered := msgs[:0]
+				for _, m := range msgs {
+					if m.Key.FromMe {
+						if rxn, ok := m.Message["reactionMessage"].(map[string]any); ok {
+							if tid, _ := rxn["targetMsgID"].(string); tid == msgID {
+								continue
+							}
+						}
+					}
+					filtered = append(filtered, m)
+				}
+				x.msgs[chatID] = filtered
+			}
+			// Optimistic local reaction message
+			var rxnMsg wireMsg
+			rxnMsg.Key.ID = fmt.Sprintf("local-rxn-%d", time.Now().UnixNano())
+			rxnMsg.Key.RemoteJID = chatID
+			rxnMsg.Key.FromMe = true
+			rxnMsg.Message = map[string]any{
+				"reactionMessage": map[string]any{
+					"targetMsgID": msgID,
+					"emoji":       emoji,
+				},
+			}
+			rxnMsg.MessageTimestamp = time.Now().Unix()
+			x.msgs[chatID] = append(x.msgs[chatID], rxnMsg)
+			x.mainCache.result = ""
+			return x, tea.Batch(
+				x.setTopBar("Reacted "+emoji),
+				postJSON(x.client, x.baseURL+"/messages/react", map[string]string{
+					"chatId":    chatID,
+					"messageId": msgID,
+					"sender":    sender,
+					"reaction":  emoji,
+				}, nil),
+			)
+		}
 		if !x.insertSelectedEmoji() {
 			return x, x.setTopBar("No emoji selected")
 		}

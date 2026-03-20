@@ -263,6 +263,8 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 		}
 		if time.Now().Before(x.msgActivityUntil) && x.msgActivityType == "sent" {
 			centerContent += accentStyle.Copy().Bold(false).Render("  " + spinnerFrames[x.spinnerFrame] + " message sent")
+		} else if _, typing := x.typingChats[x.active]; typing {
+			centerContent += mutedStyle.Copy().Italic(true).Render("  typing...")
 		}
 	}
 

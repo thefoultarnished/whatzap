@@ -383,6 +383,9 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("/whitelist/set", a.handleSetWhitelist)
 	mux.HandleFunc("/names/set", a.handleSetName)
 	mux.HandleFunc("/media/download", a.handleMediaDownload)
+	mux.HandleFunc("/typing", a.handleTyping)
+	mux.HandleFunc("/messages/react", a.handleReact)
+	mux.HandleFunc("/messages/delete", a.handleDeleteMessage)
 	return withCORS(a.withAuth(mux))
 }
 
@@ -438,6 +441,7 @@ func (a *App) bindEvents() {
 			a.mu.Lock()
 			a.connected = true
 			a.mu.Unlock()
+			_ = a.client.SendPresence(context.Background(), types.PresenceAvailable)
 			a.broadcast(EventEnvelope{Type: "ready"})
 			a.broadcast(EventEnvelope{Type: "chats:loaded"})
 		case *events.Disconnected:
@@ -513,6 +517,16 @@ func (a *App) bindEvents() {
 			ev := a.toWireCallEvent("ended", v.BasicCallMeta, "")
 			ev.Reason = strings.TrimSpace(v.Reason)
 			a.broadcast(EventEnvelope{Type: "call", Payload: ev})
+		case *events.ChatPresence:
+			chatID := a.canonicalizeChatID(v.Chat.String())
+			senderID := a.canonicalizeChatID(v.Sender.String())
+			if chatID != "" {
+				a.broadcast(EventEnvelope{Type: "typing", Payload: map[string]string{
+					"chatId": chatID,
+					"sender": senderID,
+					"state":  string(v.State),
+				}})
+			}
 		}
 	})
 }
@@ -1612,6 +1626,130 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		_ = a.client.MarkRead(context.Background(), ids, time.Now(), chatJID, senderJID)
 	}
 
+	a.persistState()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleTyping(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.requireConnectedClient(w) {
+		return
+	}
+	var req struct {
+		ChatID string `json:"chatId"`
+		State  string `json:"state"` // "composing" or "paused"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	req.ChatID = strings.TrimSpace(req.ChatID)
+	req.ChatID = a.canonicalizeChatID(req.ChatID)
+	if req.ChatID == "" {
+		writeErr(w, http.StatusBadRequest, "chatId is required")
+		return
+	}
+	jid, err := types.ParseJID(req.ChatID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid chatId")
+		return
+	}
+	state := types.ChatPresenceComposing
+	if req.State == "paused" {
+		state = types.ChatPresencePaused
+	}
+	_ = a.client.SendChatPresence(context.Background(), jid, state, types.ChatPresenceMediaText)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleReact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.requireConnectedClient(w) {
+		return
+	}
+	var req struct {
+		ChatID    string `json:"chatId"`
+		MessageID string `json:"messageId"`
+		Sender    string `json:"sender"`
+		Reaction  string `json:"reaction"` // emoji string, empty to remove
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	req.ChatID = strings.TrimSpace(req.ChatID)
+	req.ChatID = a.canonicalizeChatID(req.ChatID)
+	if req.ChatID == "" || req.MessageID == "" {
+		writeErr(w, http.StatusBadRequest, "chatId and messageId are required")
+		return
+	}
+	chatJID, err := types.ParseJID(req.ChatID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid chatId")
+		return
+	}
+	senderJID := types.EmptyJID
+	if req.Sender != "" {
+		senderJID, _ = types.ParseJID(a.canonicalizeChatID(req.Sender))
+	}
+	msg := a.client.BuildReaction(chatJID, senderJID, types.MessageID(req.MessageID), req.Reaction)
+	_, err = a.client.SendMessage(context.Background(), chatJID, msg)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.requireConnectedClient(w) {
+		return
+	}
+	var req struct {
+		ChatID    string `json:"chatId"`
+		MessageID string `json:"messageId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	req.ChatID = strings.TrimSpace(req.ChatID)
+	req.ChatID = a.canonicalizeChatID(req.ChatID)
+	if req.ChatID == "" || req.MessageID == "" {
+		writeErr(w, http.StatusBadRequest, "chatId and messageId are required")
+		return
+	}
+	chatJID, err := types.ParseJID(req.ChatID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid chatId")
+		return
+	}
+	_, err = a.client.RevokeMessage(context.Background(), chatJID, types.MessageID(req.MessageID))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Remove from local state
+	a.mu.Lock()
+	if msgs, ok := a.state.Messages[req.ChatID]; ok {
+		for i, m := range msgs {
+			if m.Key.ID == req.MessageID {
+				a.state.Messages[req.ChatID] = append(msgs[:i], msgs[i+1:]...)
+				break
+			}
+		}
+	}
+	a.mu.Unlock()
 	a.persistState()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

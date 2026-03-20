@@ -210,8 +210,12 @@ func (x m) renderEmojiPicker() string {
 	x.ensureEmojiVisible(rows)
 
 	width := min(max(54, x.w-14), 76)
+	title := accentStyle.Render("Emoji Picker") + "  " + mutedStyle.Render("Esc close  Enter insert")
+	if x.reactPickMode {
+		title = accentStyle.Render("React with Emoji") + "  " + mutedStyle.Render("Esc cancel  Enter react")
+	}
 	body := []string{
-		accentStyle.Render("Emoji Picker") + "  " + mutedStyle.Render("Esc close  Enter insert"),
+		title,
 		lipgloss.NewStyle().Foreground(text).Render("Search: ") + renderPickerQuery(x.emojiQuery, x.cursorOn),
 		"",
 	}

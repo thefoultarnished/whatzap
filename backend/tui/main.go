@@ -53,6 +53,7 @@ func main() {
 			cursorOn:            true,
 			pulseOn:             false,
 			flashUntil:          map[string]time.Time{},
+			typingChats:         map[string]time.Time{},
 			lastNotifyAt:        map[string]time.Time{},
 			soundEnabled:        currentConfig.SoundEnabled,
 			soundProfile:        normalizeSoundProfile(currentConfig.SoundProfile),
