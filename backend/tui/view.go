@@ -165,6 +165,8 @@ func (x m) View() string {
 		main = x.pointerPicker.Render(rightW, mainH)
 	} else if x.helpPicker.open {
 		main = x.helpPicker.Render(rightW, mainH)
+	} else if x.fileBrowserOpen {
+		main = x.renderFileBrowser(rightW, mainH)
 	} else if x.emojiPickerOpen {
 		main = x.renderEmojiPickerPane(rightW, mainH)
 	} else if !hasFlash && x.mainCache.result != "" && x.mainCache.key == cacheKey {
@@ -441,9 +443,9 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		if x.cursorOn {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
 				inputCursorStyle.Render(inputCursorGlyph) +
-				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E for emoji")
+				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E emoji | Alt+F file")
 		} else {
-			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E for emoji")
+			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E emoji | Alt+F file")
 		}
 	}
 
@@ -698,8 +700,6 @@ func renderStyledMessageText(
 	return bodyStyle.Render(ln)
 }
 
-
-
 func outgoingMessageIndent(paneW int, blockW int, fromMe bool) string {
 	if !fromMe {
 		return ""
@@ -760,6 +760,7 @@ func (x m) renderWelcomePane(w, h int) string {
 		shortcut("↑ / ↓", "Scroll messages"),
 		shortcut("Alt+R", "Pick msg to reply"),
 		shortcut("Alt+E", "Emoji picker"),
+		shortcut("Alt+F", "File picker"),
 		shortcut("Tab / Esc", "Exit chat"),
 	})
 

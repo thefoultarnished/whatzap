@@ -137,17 +137,22 @@ type m struct {
 	themePicker                              picker
 	pointerPicker                            picker
 	helpPicker                               picker
+	fileBrowserOpen                          bool
+	fileBrowserDir                           string
+	fileBrowserEntries                       []fileBrowserEntry
+	fileBrowserIndex                         int
+	fileBrowserScroll                        int
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int
 	emojiResultsCache                        []emojiItem
 	emojiResultsDirty                        bool
-	reactPickMode                            bool              // emoji picker opened for reaction (not input insert)
-	reactPickMsgID                           string            // message ID to react to
-	reactPickChatID                          string            // chat ID for the reaction
-	reactPickSender                          string            // sender JID for the reaction target
+	reactPickMode                            bool                 // emoji picker opened for reaction (not input insert)
+	reactPickMsgID                           string               // message ID to react to
+	reactPickChatID                          string               // chat ID for the reaction
+	reactPickSender                          string               // sender JID for the reaction target
 	typingChats                              map[string]time.Time // chatID -> when typing started (auto-expires)
-	lastComposingChat                        string            // chatID we last sent "composing" to
+	lastComposingChat                        string               // chatID we last sent "composing" to
 	restartRequested                         bool
 	soundEnabled                             bool
 	soundProfile                             int

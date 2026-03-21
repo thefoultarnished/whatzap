@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,6 +71,102 @@ func TestRenderChatInputFocusedTypableShowsBlinkingCursorState(t *testing.T) {
 
 	if renderedOn == renderedOff {
 		t.Fatalf("expected locked focused input to render different blink states")
+	}
+}
+
+func TestAltFOpensFilePickerInChat(t *testing.T) {
+	currentTheme = TokyoNight
+	rehashStyles()
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(filePath, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := m{
+		status:         "ready",
+		mode:           "chat",
+		active:         "15551230001@s.whatsapp.net",
+		whitelist:      map[string]string{"15551230001": "Allowed"},
+		fileBrowserDir: dir,
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f"), Alt: true})
+	got := next.(m)
+
+	if !got.fileBrowserOpen {
+		t.Fatal("expected file browser to open")
+	}
+	if got.fileBrowserDir != dir {
+		t.Fatalf("fileBrowserDir = %q, want %q", got.fileBrowserDir, dir)
+	}
+	if len(got.fileBrowserEntries) == 0 {
+		t.Fatal("expected file browser entries")
+	}
+}
+
+func TestFilePickerSelectFileInsertsSendCommand(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(filePath, []byte("pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := m{
+		status:         "ready",
+		mode:           "chat",
+		active:         "15551230001@s.whatsapp.net",
+		whitelist:      map[string]string{"15551230001": "Allowed"},
+		fileBrowserDir: dir,
+	}
+	if err := model.loadFileBrowserDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	model.fileBrowserOpen = true
+	for i, entry := range model.fileBrowserEntries {
+		if entry.path == filePath {
+			model.fileBrowserIndex = i
+			break
+		}
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(m)
+
+	if got.fileBrowserOpen {
+		t.Fatal("expected file browser to close after selecting a file")
+	}
+	want := `/send "` + filePath + `"`
+	if got.input != want {
+		t.Fatalf("input = %q, want %q", got.input, want)
+	}
+}
+
+func TestFilePickerBackspaceGoesToParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	model := m{
+		status:         "ready",
+		mode:           "chat",
+		active:         "15551230001@s.whatsapp.net",
+		whitelist:      map[string]string{"15551230001": "Allowed"},
+		fileBrowserDir: child,
+	}
+	if err := model.loadFileBrowserDir(child); err != nil {
+		t.Fatal(err)
+	}
+	model.fileBrowserOpen = true
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyBackspace})
+	got := next.(m)
+
+	if got.fileBrowserDir != root {
+		t.Fatalf("fileBrowserDir = %q, want %q", got.fileBrowserDir, root)
 	}
 }
 
