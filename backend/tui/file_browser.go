@@ -163,6 +163,37 @@ func quoteSendPath(path string) string {
 	return strings.ReplaceAll(path, `"`, `\"`)
 }
 
+func (x *m) setPendingAttachment(path string) {
+	x.pendingAttachmentPath = path
+	x.pendingAttachmentName = filepath.Base(path)
+	x.pendingAttachmentKind = ""
+	if kind, err := detectMediaSendKind(path); err == nil {
+		x.pendingAttachmentKind = kind
+	}
+}
+
+func (x *m) clearPendingAttachment() {
+	x.pendingAttachmentPath = ""
+	x.pendingAttachmentKind = ""
+	x.pendingAttachmentName = ""
+}
+
+func (x m) pendingAttachmentLabel() string {
+	if x.pendingAttachmentPath == "" {
+		return ""
+	}
+	switch x.pendingAttachmentKind {
+	case "image":
+		return "[image attached] " + x.pendingAttachmentName
+	case "video":
+		return "[video attached] " + x.pendingAttachmentName
+	case "document":
+		return "[file attached] " + x.pendingAttachmentName
+	default:
+		return "[attached] " + x.pendingAttachmentName
+	}
+}
+
 func (x m) renderFileBrowser(w, h int) string {
 	titleStyle := lipgloss.NewStyle().Foreground(accent).Bold(true)
 	hintStyle := lipgloss.NewStyle().Foreground(muted)

@@ -375,7 +375,31 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		txt := sanitizeOutgoingText(x.input)
 		x.input = ""
-		if !hasVisibleText(txt) || x.active == "" {
+		if x.active == "" {
+			return x, nil
+		}
+		if x.pendingAttachmentPath != "" {
+			if _, ok := x.whitelist[num(x.active)]; !ok {
+				return x, x.setTopBar("Not whitelisted - use /whitelist to enable")
+			}
+			if x.demoMode {
+				x.clearPendingAttachment()
+				return x, x.setTopBar("Demo mode: media send disabled")
+			}
+			kind := x.pendingAttachmentKind
+			if kind == "" {
+				var err error
+				kind, err = detectMediaSendKind(x.pendingAttachmentPath)
+				if err != nil {
+					return x, x.setTopBar(err.Error())
+				}
+			}
+			path := x.pendingAttachmentPath
+			x.clearPendingAttachment()
+			x.replyTo = nil
+			return x, sendFile(x.client, x.baseURL, x.active, kind, path, txt, "")
+		}
+		if !hasVisibleText(txt) {
 			return x, nil
 		}
 		if cmd, handled := x.handleSlash(strings.TrimSpace(txt)); handled {
@@ -741,6 +765,7 @@ func (x *m) clearChatComposer() {
 	x.inputBuf = ""
 	x.inputFlushScheduled = false
 	x.inputAllSelected = false
+	x.clearPendingAttachment()
 	x.replyTo = nil
 	x.replyPickMode = false
 	x.replyPickIndex = 0
@@ -976,10 +1001,12 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return x, nil
 			}
 			x.closeFileBrowser()
-			x.input = `/send "` + quoteSendPath(entry.path) + `"`
+			x.input = ""
 			x.inputBuf = ""
 			x.inputFlushScheduled = false
 			x.inputAllSelected = false
+			x.replyTo = nil
+			x.setPendingAttachment(entry.path)
 			x.sidebarFocused = false
 			return x, nil
 		}
@@ -1261,6 +1288,10 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEsc:
 			if x.inputAllSelected {
 				x.inputAllSelected = false
+				return x, nil
+			}
+			if x.pendingAttachmentPath != "" {
+				x.clearPendingAttachment()
 				return x, nil
 			}
 			if strings.HasPrefix(x.input, "@") {

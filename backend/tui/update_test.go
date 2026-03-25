@@ -137,9 +137,11 @@ func TestFilePickerSelectFileInsertsSendCommand(t *testing.T) {
 	if got.fileBrowserOpen {
 		t.Fatal("expected file browser to close after selecting a file")
 	}
-	want := `/send "` + filePath + `"`
-	if got.input != want {
-		t.Fatalf("input = %q, want %q", got.input, want)
+	if got.pendingAttachmentPath != filePath {
+		t.Fatalf("pendingAttachmentPath = %q, want %q", got.pendingAttachmentPath, filePath)
+	}
+	if got.input != "" {
+		t.Fatalf("input = %q, want empty caption composer", got.input)
 	}
 }
 
@@ -167,6 +169,56 @@ func TestFilePickerBackspaceGoesToParentDirectory(t *testing.T) {
 
 	if got.fileBrowserDir != root {
 		t.Fatalf("fileBrowserDir = %q, want %q", got.fileBrowserDir, root)
+	}
+}
+
+func TestAttachmentEnterSendsFileWithCaptionInDemoMode(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(filePath, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := m{
+		status:                "ready",
+		mode:                  "chat",
+		active:                "15551230001@s.whatsapp.net",
+		whitelist:             map[string]string{"15551230001": "Allowed"},
+		demoMode:              true,
+		pendingAttachmentPath: filePath,
+		pendingAttachmentKind: "image",
+		pendingAttachmentName: "photo.jpg",
+		input:                 "summer trip",
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	armed := next.(m)
+	next, cmd := armed.Update(composerSendMsg{seq: armed.pendingSendSeq})
+	got := next.(m)
+
+	if cmd == nil {
+		t.Fatal("expected top bar command for demo media send")
+	}
+	if got.pendingAttachmentPath != "" {
+		t.Fatal("expected pending attachment to clear after send attempt")
+	}
+}
+
+func TestEscCancelsPendingAttachment(t *testing.T) {
+	model := m{
+		status:                "ready",
+		mode:                  "chat",
+		active:                "15551230001@s.whatsapp.net",
+		whitelist:             map[string]string{"15551230001": "Allowed"},
+		pendingAttachmentPath: "C:\\tmp\\photo.jpg",
+		pendingAttachmentKind: "image",
+		pendingAttachmentName: "photo.jpg",
+	}
+
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(m)
+
+	if got.pendingAttachmentPath != "" {
+		t.Fatal("expected Esc to clear pending attachment")
 	}
 }
 

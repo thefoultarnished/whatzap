@@ -96,6 +96,10 @@ func (x m) View() string {
 	if x.replyTo != nil {
 		replyBarH = 1
 	}
+	attachmentBarH := 0
+	if x.pendingAttachmentPath != "" {
+		attachmentBarH = 1
+	}
 	typedInput := x.input + x.inputBuf
 
 	// Calculate extra input lines from text width directly (stable, no render dependency).
@@ -115,6 +119,7 @@ func (x m) View() string {
 	extraInputH := max(0, inputLines-1)
 
 	replyBar := x.renderReplyBar(contentW, rightW)
+	attachmentBar := x.renderAttachmentBar(rightW)
 
 	// Left column: sidebar + command box.
 	sideH := outerH - 4
@@ -123,7 +128,7 @@ func (x m) View() string {
 	leftCol := lipgloss.JoinVertical(lipgloss.Left, side, cmdBox)
 
 	// Right column: main pane shrinks to accommodate multiline input.
-	mainH := max(1, outerH-4-replyBarH-extraInputH)
+	mainH := max(1, outerH-4-replyBarH-attachmentBarH-extraInputH)
 
 	hasFlash := false
 	now := time.Now()
@@ -183,6 +188,9 @@ func (x m) View() string {
 	rightParts := []string{main}
 	if replyBar != "" {
 		rightParts = append(rightParts, replyBar)
+	}
+	if attachmentBar != "" {
+		rightParts = append(rightParts, attachmentBar)
 	}
 	rightParts = append(rightParts, chatInput)
 	rightCol := lipgloss.JoinVertical(lipgloss.Left, rightParts...)
@@ -443,9 +451,9 @@ func (x m) renderChatInput(rightW int, typedInput string) string {
 		if x.cursorOn {
 			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render(" ") +
 				inputCursorStyle.Render(inputCursorGlyph) +
-				lipgloss.NewStyle().Foreground(muted).Render("Type a message | Alt+E emoji | Alt+F file")
+				lipgloss.NewStyle().Foreground(muted).Render(x.emptyComposerHint())
 		} else {
-			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  Type a message | Alt+E emoji | Alt+F file")
+			inputDisplay = lipgloss.NewStyle().Foreground(muted).Render("  " + x.emptyComposerHint())
 		}
 	}
 
@@ -504,6 +512,29 @@ func (x m) renderReplyBar(contentW, rightW int) string {
 		lipgloss.NewStyle().Foreground(quoteTextColor).Render(rText) +
 		lipgloss.NewStyle().Foreground(muted).Render(suffixText)
 	return lipgloss.NewStyle().Width(rightW).Render(bar)
+}
+
+func (x m) renderAttachmentBar(rightW int) string {
+	if x.pendingAttachmentPath == "" {
+		return ""
+	}
+	label := x.pendingAttachmentLabel()
+	textWidth := rightW - runeDisplayWidth(" 📎 ") - runeDisplayWidth("  Esc cancel")
+	if textWidth < 0 {
+		textWidth = 0
+	}
+	label = truncateDisplayWidth(label, textWidth)
+	bar := lipgloss.NewStyle().Foreground(brand).Bold(true).Render(" 📎 ") +
+		lipgloss.NewStyle().Foreground(text).Render(label) +
+		lipgloss.NewStyle().Foreground(muted).Render("  Esc cancel")
+	return lipgloss.NewStyle().Width(rightW).Render(bar)
+}
+
+func (x m) emptyComposerHint() string {
+	if x.pendingAttachmentPath != "" {
+		return "Type a caption | Enter send file | Esc cancel"
+	}
+	return "Type a message | Alt+E emoji | Alt+F file"
 }
 
 func (x m) renderSide(w, h int) string {

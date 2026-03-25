@@ -142,6 +142,9 @@ type m struct {
 	fileBrowserEntries                       []fileBrowserEntry
 	fileBrowserIndex                         int
 	fileBrowserScroll                        int
+	pendingAttachmentPath                    string
+	pendingAttachmentKind                    string
+	pendingAttachmentName                    string
 	emojiQuery                               string
 	emojiSel                                 int
 	emojiScroll                              int
