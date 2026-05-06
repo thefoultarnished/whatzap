@@ -26,7 +26,7 @@ import (
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "test.db")+"?_pragma=journal_mode(WAL)")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -54,27 +54,25 @@ func newTestApp(t *testing.T) *App {
 	`); err != nil {
 		t.Fatalf("create messages table: %v", err)
 	}
-
-	cacheFile, err := os.CreateTemp("", "whatzap-state-*.json")
-	if err != nil {
-		t.Fatalf("create cache file: %v", err)
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS chats (
+			id           TEXT PRIMARY KEY,
+			name         TEXT NOT NULL DEFAULT '',
+			subject      TEXT NOT NULL DEFAULT '',
+			conv_ts      INTEGER NOT NULL DEFAULT 0,
+			unread_count INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS contacts (
+			id     TEXT PRIMARY KEY,
+			name   TEXT NOT NULL DEFAULT '',
+			notify TEXT NOT NULL DEFAULT ''
+		);
+	`); err != nil {
+		t.Fatalf("create chats/contacts tables: %v", err)
 	}
-	cachePath := cacheFile.Name()
-	if err := cacheFile.Close(); err != nil {
-		t.Fatalf("close cache file: %v", err)
-	}
-	t.Cleanup(func() {
-		for i := 0; i < 20; i++ {
-			if err := os.Remove(cachePath); err == nil || os.IsNotExist(err) {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	})
 
 	app := &App{
 		db:        db,
-		cachePath: cachePath,
 		apiToken:  "test-api-token",
 		wsClients: map[*websocket.Conn]*wsClient{},
 		state: PersistedState{
@@ -288,31 +286,21 @@ func TestUpsertMessageSkipsPersistDuringHistorySync(t *testing.T) {
 	app.upsertMessage("15551230001@s.whatsapp.net", msg)
 	time.Sleep(50 * time.Millisecond)
 
-	raw, err := os.ReadFile(app.cachePath)
-	if err != nil {
-		t.Fatalf("read cache file: %v", err)
-	}
-	if len(raw) != 0 {
-		t.Fatalf("cache file was written during history sync: %q", string(raw))
+	// During history sync: message is in DB but chat row must NOT be written yet.
+	var chatCount int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatCount)
+	if chatCount != 0 {
+		t.Fatalf("chat was persisted to DB during history sync")
 	}
 
+	// Manually flush — must now write the in-memory chat to DB.
 	app.historySyncing = false
-	app.upsertMessage("15551230001@s.whatsapp.net", WireMessage{
-		Key:              WireKey{ID: "m2", FromMe: false},
-		MessageTimestamp: 101,
-		Message:          map[string]any{"conversation": "second"},
-	})
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		raw, err = os.ReadFile(app.cachePath)
-		if err == nil && len(raw) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for persisted state")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := app.persistStateWithErr(); err != nil {
+		t.Fatalf("persistStateWithErr: %v", err)
+	}
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatCount)
+	if chatCount == 0 {
+		t.Fatalf("chat not in DB after manual persistState")
 	}
 }
 
@@ -348,27 +336,11 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	if got := body["message"]; got != "Logged out successfully" {
 		t.Fatalf("logout message = %#v, want Logged out successfully", got)
 	}
-
-	raw, err := os.ReadFile(app.cachePath)
-	if err != nil {
-		t.Fatalf("failed to read persisted state: %v", err)
-	}
-	var persisted PersistedState
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatalf("failed to parse persisted state: %v", err)
-	}
-	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 {
-		t.Fatalf("persisted state was not cleared")
-	}
 }
 
 func TestHandleLogoutRemovesLocalCacheArtifacts(t *testing.T) {
 	app := newTestApp(t)
 	app.cacheDir = t.TempDir()
-	app.cachePath = filepath.Join(app.cacheDir, "state.json")
-	if err := os.WriteFile(app.cachePath, []byte(`{"stale":true}`), 0o644); err != nil {
-		t.Fatalf("write state file: %v", err)
-	}
 	leftover := filepath.Join(app.cacheDir, "leftover.tmp")
 	if err := os.WriteFile(leftover, []byte("secret"), 0o644); err != nil {
 		t.Fatalf("write leftover file: %v", err)
@@ -383,17 +355,6 @@ func TestHandleLogoutRemovesLocalCacheArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("leftover file still exists or stat failed: %v", err)
-	}
-	raw, err := os.ReadFile(app.cachePath)
-	if err != nil {
-		t.Fatalf("failed to read recreated state file: %v", err)
-	}
-	var persisted PersistedState
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatalf("failed to parse recreated state file: %v", err)
-	}
-	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 {
-		t.Fatalf("recreated persisted state was not empty")
 	}
 	if app.db != nil {
 		_ = app.db.Close()
@@ -506,13 +467,14 @@ func TestWebSocketRequiresAuthAndAllowedOrigin(t *testing.T) {
 }
 
 // Logout failure.
-func TestHandleLogoutFailsWhenStateCannotBePersisted(t *testing.T) {
+func TestHandleLogoutFailsWhenCacheDirCannotBeRecreated(t *testing.T) {
 	app := newTestApp(t)
+	// Place cacheDir inside a regular file so MkdirAll fails.
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write blocker file failed: %v", err)
 	}
-	app.cachePath = filepath.Join(blocker, "state.json")
+	app.cacheDir = filepath.Join(blocker, "sub")
 	app.started = true
 	app.connected = true
 	app.state = PersistedState{
@@ -551,19 +513,17 @@ func TestPersistStateWithErr(t *testing.T) {
 		t.Fatalf("persist state failed: %v", err)
 	}
 
-	raw, err := os.ReadFile(app.cachePath)
-	if err != nil {
-		t.Fatalf("read persisted state failed: %v", err)
+	// Chats and contacts are now in SQLite.
+	var chatName string
+	_ = app.db.QueryRow(`SELECT name FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatName)
+	if chatName != "Alex" {
+		t.Fatalf("chat name in DB = %q, want Alex", chatName)
 	}
-
-	var persisted PersistedState
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatalf("parse persisted state failed: %v", err)
+	var notify string
+	_ = app.db.QueryRow(`SELECT notify FROM contacts WHERE id = '15551230001@s.whatsapp.net'`).Scan(&notify)
+	if notify != "Alex" {
+		t.Fatalf("contact notify in DB = %q, want Alex", notify)
 	}
-	if got := persisted.Chats["15551230001@s.whatsapp.net"].Name; got != "Alex" {
-		t.Fatalf("chat name = %q, want Alex", got)
-	}
-	// Messages are now in SQLite, not JSON — verify via DB.
 	var msgID string
 	_ = app.db.QueryRow(`SELECT id FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&msgID)
 	if msgID != "m1" {
@@ -603,6 +563,14 @@ func TestWriteFileAtomicReplacesFileAndCleansTemp(t *testing.T) {
 // Load check.
 func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 	app := newTestApp(t)
+	f, err := os.CreateTemp("", "whatzap-state-*.json")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	app.cachePath = f.Name()
+	_ = f.Close()
+	t.Cleanup(func() { os.Remove(app.cachePath) })
+
 	state := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex"}},"messages":{"15551230001":[{"key":{"remoteJid":"15551230001","fromMe":false},"message":{"conversation":"hello"},"messageTimestamp":77}]}}`
 	if err := os.WriteFile(app.cachePath, []byte(state), 0o644); err != nil {
 		t.Fatalf("write state file failed: %v", err)
@@ -638,6 +606,13 @@ func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 
 func TestLoadStateCorruptionFallsBackToBootstrap(t *testing.T) {
 	app := newTestApp(t)
+	f, err := os.CreateTemp("", "whatzap-corrupt-*.json")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	app.cachePath = f.Name()
+	_ = f.Close()
+
 	app.state.Chats["stale"] = Chat{ID: "stale"}
 	if err := os.WriteFile(app.cachePath, []byte("{not-json"), 0o644); err != nil {
 		t.Fatalf("write corrupt state file failed: %v", err)
@@ -1301,32 +1276,51 @@ func TestDeleteMessageRemovesFromDB(t *testing.T) {
 	}
 }
 
-func TestJSONMigrationMovesMessagesToSQLite(t *testing.T) {
+func TestJSONMigrationMovesEverythingToSQLite(t *testing.T) {
 	app := newTestApp(t)
-	// Old-format state.json with inline messages.
-	old := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex","conversationTimestamp":42}},"messages":{"15551230001":[{"key":{"id":"migrated1","remoteJid":"15551230001","fromMe":false},"message":{"conversation":"migrated"},"messageTimestamp":42}]}}`
+	f, err := os.CreateTemp("", "whatzap-migrate-*.json")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	app.cachePath = f.Name()
+	_ = f.Close()
+
+	old := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex","conversationTimestamp":42}},"contacts":{"15551230001":{"id":"15551230001","notify":"Alex"}},"messages":{"15551230001":[{"key":{"id":"migrated1","remoteJid":"15551230001","fromMe":false},"message":{"conversation":"migrated"},"messageTimestamp":42}]}}`
 	if err := os.WriteFile(app.cachePath, []byte(old), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	app.loadState()
 
-	// Message should be in SQLite with canonical chat ID.
-	var id, chatID string
-	err := app.db.QueryRow(`SELECT id, chat_id FROM messages WHERE id = 'migrated1'`).Scan(&id, &chatID)
-	if err != nil {
+	// Message migrated with canonical chat ID.
+	var msgChatID string
+	if err := app.db.QueryRow(`SELECT chat_id FROM messages WHERE id = 'migrated1'`).Scan(&msgChatID); err != nil {
 		t.Fatalf("migrated message not found in DB: %v", err)
 	}
-	if chatID != "15551230001@s.whatsapp.net" {
-		t.Fatalf("chat_id = %q, want canonical form", chatID)
+	if msgChatID != "15551230001@s.whatsapp.net" {
+		t.Fatalf("message chat_id = %q, want canonical form", msgChatID)
 	}
 
-	// state.json should be rewritten without messages key.
-	raw, err := os.ReadFile(app.cachePath)
-	if err != nil {
-		t.Fatalf("read state: %v", err)
+	// Chat migrated to chats table.
+	var chatName string
+	if err := app.db.QueryRow(`SELECT name FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatName); err != nil {
+		t.Fatalf("migrated chat not found in DB: %v", err)
 	}
-	if strings.Contains(string(raw), `"messages"`) {
-		t.Fatalf("state.json still contains messages after migration")
+	if chatName != "Alex" {
+		t.Fatalf("chat name = %q, want Alex", chatName)
+	}
+
+	// Contact migrated to contacts table.
+	var notify string
+	if err := app.db.QueryRow(`SELECT notify FROM contacts WHERE id = '15551230001@s.whatsapp.net'`).Scan(&notify); err != nil {
+		t.Fatalf("migrated contact not found in DB: %v", err)
+	}
+	if notify != "Alex" {
+		t.Fatalf("contact notify = %q, want Alex", notify)
+	}
+
+	// state.json deleted after migration.
+	if _, err := os.Stat(app.cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state.json should be deleted after migration")
 	}
 }

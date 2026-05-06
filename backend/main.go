@@ -348,6 +348,23 @@ func (a *App) initPersistentResources() error {
 		_ = rawDB.Close()
 		return err
 	}
+	if _, err := rawDB.Exec(`
+		CREATE TABLE IF NOT EXISTS chats (
+			id           TEXT PRIMARY KEY,
+			name         TEXT NOT NULL DEFAULT '',
+			subject      TEXT NOT NULL DEFAULT '',
+			conv_ts      INTEGER NOT NULL DEFAULT 0,
+			unread_count INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS contacts (
+			id     TEXT PRIMARY KEY,
+			name   TEXT NOT NULL DEFAULT '',
+			notify TEXT NOT NULL DEFAULT ''
+		);
+	`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
 
 	a.db = rawDB
 	a.storeContainer = container
@@ -714,6 +731,56 @@ func scanMessageRow(rows *sql.Rows) (WireMessage, error) {
 	}, nil
 }
 
+func (a *App) upsertChatToDB(chat Chat) error {
+	_, err := a.db.Exec(`
+		INSERT OR REPLACE INTO chats (id, name, subject, conv_ts, unread_count)
+		VALUES (?, ?, ?, ?, ?)
+	`, chat.ID, chat.Name, chat.Subject, chat.ConversationTimestamp, chat.UnreadCount)
+	return err
+}
+
+func (a *App) upsertContactToDB(contact Contact) error {
+	_, err := a.db.Exec(`
+		INSERT OR REPLACE INTO contacts (id, name, notify)
+		VALUES (?, ?, ?)
+	`, contact.ID, contact.Name, contact.Notify)
+	return err
+}
+
+func (a *App) loadChatsFromDB() (map[string]Chat, error) {
+	rows, err := a.db.Query(`SELECT id, name, subject, conv_ts, unread_count FROM chats`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	chats := map[string]Chat{}
+	for rows.Next() {
+		var c Chat
+		if err := rows.Scan(&c.ID, &c.Name, &c.Subject, &c.ConversationTimestamp, &c.UnreadCount); err != nil {
+			return nil, err
+		}
+		chats[c.ID] = c
+	}
+	return chats, rows.Err()
+}
+
+func (a *App) loadContactsFromDB() (map[string]Contact, error) {
+	rows, err := a.db.Query(`SELECT id, name, notify FROM contacts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	contacts := map[string]Contact{}
+	for rows.Next() {
+		var c Contact
+		if err := rows.Scan(&c.ID, &c.Name, &c.Notify); err != nil {
+			return nil, err
+		}
+		contacts[c.ID] = c
+	}
+	return contacts, rows.Err()
+}
+
 func (a *App) upsertMessage(chatID string, msg WireMessage) {
 	chatID = a.canonicalizeChatID(chatID)
 	if chatID == "" {
@@ -763,7 +830,11 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 	if !a.historySyncing {
 		go a.persistState()
 	}
-	go a.upsertPermission(phoneFromJID(chatID), msg.PushName)
+	permName := msg.PushName
+	if msg.Key.FromMe {
+		permName = ""
+	}
+	go a.upsertPermission(phoneFromJID(chatID), permName)
 }
 
 func receiptStatusFromType(t types.ReceiptType) string {
@@ -2194,6 +2265,28 @@ func dedupeKey(m WireMessage) string {
 }
 
 func (a *App) loadState() {
+	// Primary source: SQLite chats + contacts tables.
+	if a.db != nil {
+		chats, err1 := a.loadChatsFromDB()
+		contacts, err2 := a.loadContactsFromDB()
+		if err1 == nil && err2 == nil && (len(chats) > 0 || len(contacts) > 0) {
+			a.mu.Lock()
+			a.state.Chats = chats
+			a.state.Contacts = contacts
+			a.needsBootstrapSync = false
+			a.mu.Unlock()
+			a.reconcileChatTimestampsFromDB()
+			return
+		}
+	}
+
+	// DB is empty — try one-time migration from legacy state.json.
+	if a.cachePath == "" {
+		a.mu.Lock()
+		a.needsBootstrapSync = true
+		a.mu.Unlock()
+		return
+	}
 	raw, err := os.ReadFile(a.cachePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2211,14 +2304,15 @@ func (a *App) loadState() {
 		a.mu.Unlock()
 		return
 	}
-	var state PersistedState
-	if err := json.Unmarshal(raw, &state); err != nil {
+	var legacy struct {
+		Chats    map[string]Chat          `json:"chats"`
+		Contacts map[string]Contact       `json:"contacts"`
+		Messages map[string][]WireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &legacy); err != nil {
 		log.Printf("state parse error: %v", err)
 		a.mu.Lock()
-		a.state = PersistedState{
-			Chats:    map[string]Chat{},
-			Contacts: map[string]Contact{},
-		}
+		a.state = PersistedState{Chats: map[string]Chat{}, Contacts: map[string]Contact{}}
 		a.needsBootstrapSync = true
 		a.mu.Unlock()
 		if removeErr := os.Remove(a.cachePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -2226,38 +2320,48 @@ func (a *App) loadState() {
 		}
 		return
 	}
-	if state.Chats == nil {
-		state.Chats = map[string]Chat{}
+	if legacy.Chats == nil {
+		legacy.Chats = map[string]Chat{}
 	}
-	if state.Contacts == nil {
-		state.Contacts = map[string]Contact{}
+	if legacy.Contacts == nil {
+		legacy.Contacts = map[string]Contact{}
 	}
 
-	// One-time migration: move any messages that were stored in the old JSON format into SQLite.
-	var legacy struct {
-		Messages map[string][]WireMessage `json:"messages"`
-	}
-	if json.Unmarshal(raw, &legacy) == nil && len(legacy.Messages) > 0 {
-		for rawChatID, msgs := range legacy.Messages {
-			chatID := a.canonicalizeChatID(rawChatID)
-			for _, msg := range msgs {
-				msg.Key.RemoteJID = a.canonicalizeChatID(msg.Key.RemoteJID)
-				if msg.Key.Participant != "" {
-					msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
-				}
-				_ = a.insertMessageToDB(chatID, msg)
+	// Migrate messages from old JSON.
+	for rawChatID, msgs := range legacy.Messages {
+		chatID := a.canonicalizeChatID(rawChatID)
+		for _, msg := range msgs {
+			msg.Key.RemoteJID = a.canonicalizeChatID(msg.Key.RemoteJID)
+			if msg.Key.Participant != "" {
+				msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
 			}
+			_ = a.insertMessageToDB(chatID, msg)
 		}
-		log.Printf("loadState: migrated %d chats from JSON to SQLite", len(legacy.Messages))
+	}
+	if len(legacy.Messages) > 0 {
+		log.Printf("loadState: migrated %d chats of messages from JSON to SQLite", len(legacy.Messages))
 	}
 
+	state := PersistedState{Chats: legacy.Chats, Contacts: legacy.Contacts}
 	a.migrateStateCanonicalIDs(&state)
+
+	// Migrate chats/contacts to DB and delete the JSON file.
+	for _, chat := range state.Chats {
+		_ = a.upsertChatToDB(chat)
+	}
+	for _, contact := range state.Contacts {
+		_ = a.upsertContactToDB(contact)
+	}
+	if len(state.Chats) > 0 || len(state.Contacts) > 0 {
+		log.Printf("loadState: migrated chats/contacts from state.json to SQLite")
+	}
+	_ = os.Remove(a.cachePath)
+
 	a.mu.Lock()
 	a.state = state
-	a.needsBootstrapSync = false
+	a.needsBootstrapSync = len(state.Chats) == 0
 	a.mu.Unlock()
 	a.reconcileChatTimestampsFromDB()
-	a.persistState()
 }
 
 // seeding chats from store so UI isn't empty on first start
@@ -2363,13 +2467,30 @@ func (a *App) persistState() {
 }
 
 func (a *App) persistStateWithErr() error {
-	a.mu.RLock()
-	b, err := json.Marshal(a.state)
-	a.mu.RUnlock()
-	if err != nil {
-		return err
+	if a.db == nil {
+		return nil
 	}
-	return writeFileAtomic(a.cachePath, b, 0o644)
+	a.mu.RLock()
+	chats := make([]Chat, 0, len(a.state.Chats))
+	for _, c := range a.state.Chats {
+		chats = append(chats, c)
+	}
+	contacts := make([]Contact, 0, len(a.state.Contacts))
+	for _, c := range a.state.Contacts {
+		contacts = append(contacts, c)
+	}
+	a.mu.RUnlock()
+	for _, chat := range chats {
+		if err := a.upsertChatToDB(chat); err != nil {
+			return err
+		}
+	}
+	for _, contact := range contacts {
+		if err := a.upsertContactToDB(contact); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Atomic write for persisted state files.
