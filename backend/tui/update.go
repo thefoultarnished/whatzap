@@ -81,6 +81,9 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if !exists {
 					x.msgs[wm.Key.RemoteJID] = append(x.msgs[wm.Key.RemoteJID], wm)
+					sort.Slice(x.msgs[wm.Key.RemoteJID], func(i, j int) bool {
+						return x.msgs[wm.Key.RemoteJID][i].MessageTimestamp < x.msgs[wm.Key.RemoteJID][j].MessageTimestamp
+					})
 				}
 				x.mainCache.result = ""
 				if !wm.Key.FromMe && wm.Key.ID != "" {
