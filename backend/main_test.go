@@ -37,6 +37,23 @@ func newTestApp(t *testing.T) *App {
 	)`); err != nil {
 		t.Fatalf("create chat_permissions: %v", err)
 	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS messages (
+			id           TEXT NOT NULL,
+			chat_id      TEXT NOT NULL,
+			from_me      INTEGER NOT NULL DEFAULT 0,
+			participant  TEXT NOT NULL DEFAULT '',
+			ts           INTEGER NOT NULL DEFAULT 0,
+			push_name    TEXT NOT NULL DEFAULT '',
+			receipt      TEXT NOT NULL DEFAULT '',
+			message_json TEXT NOT NULL DEFAULT '{}',
+			media_proto  TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (chat_id, id, from_me)
+		);
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages (chat_id, ts);
+	`); err != nil {
+		t.Fatalf("create messages table: %v", err)
+	}
 
 	cacheFile, err := os.CreateTemp("", "whatzap-state-*.json")
 	if err != nil {
@@ -63,7 +80,6 @@ func newTestApp(t *testing.T) *App {
 		state: PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
-			Messages: map[string][]WireMessage{},
 		},
 	}
 	t.Cleanup(func() {
@@ -82,60 +98,68 @@ func authorizedRequest(req *http.Request, app *App) *http.Request {
 // Receipt check.
 func TestUpdateReceiptStatus(t *testing.T) {
 	app := newTestApp(t)
-	app.state.Messages["chat-1"] = []WireMessage{
-		{Key: WireKey{ID: "m1", FromMe: true}, ReceiptStatus: "sent"},
-		{Key: WireKey{ID: "m2", FromMe: true}, ReceiptStatus: "read"},
-		{Key: WireKey{ID: "m3", FromMe: false}},
+	// Seed messages into DB.
+	for _, m := range []WireMessage{
+		{Key: WireKey{ID: "m1", RemoteJID: "chat-1", FromMe: true}, ReceiptStatus: "sent", Message: map[string]any{}},
+		{Key: WireKey{ID: "m2", RemoteJID: "chat-1", FromMe: true}, ReceiptStatus: "read", Message: map[string]any{}},
+		{Key: WireKey{ID: "m3", RemoteJID: "chat-1", FromMe: false}, Message: map[string]any{}},
+	} {
+		if err := app.insertMessageToDB("chat-1", m); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
 	}
 
 	changed := app.updateReceiptStatus("chat-1", []string{"m1", "m2", "m3"}, "delivered")
 	if !changed {
 		t.Fatalf("expected receipt update to change state")
 	}
-	if got := app.state.Messages["chat-1"][0].ReceiptStatus; got != "delivered" {
+
+	receiptOf := func(id string) string {
+		var r string
+		_ = app.db.QueryRow(`SELECT receipt FROM messages WHERE chat_id = 'chat-1' AND id = ?`, id).Scan(&r)
+		return r
+	}
+	if got := receiptOf("m1"); got != "delivered" {
 		t.Fatalf("m1 receipt = %q, want delivered", got)
 	}
-	if got := app.state.Messages["chat-1"][1].ReceiptStatus; got != "read" {
+	if got := receiptOf("m2"); got != "read" {
 		t.Fatalf("m2 receipt regressed to %q", got)
 	}
-	if got := app.state.Messages["chat-1"][2].ReceiptStatus; got != "" {
+	if got := receiptOf("m3"); got != "" {
 		t.Fatalf("received message receipt changed to %q", got)
 	}
 }
 
-// Timestamp check.
+// Timestamp check — now uses DB-backed reconciliation.
 func TestReconcileChatTimestamps(t *testing.T) {
-	state := &PersistedState{
-		Chats: map[string]Chat{
-			"chat-1": {ID: "chat-1", ConversationTimestamp: 10},
-			"chat-2": {ID: "chat-2", ConversationTimestamp: 200},
-		},
-		Contacts: map[string]Contact{},
-		Messages: map[string][]WireMessage{
-			"chat-1": {
-				{MessageTimestamp: 40},
-				{MessageTimestamp: 90},
-			},
-			"chat-2": {
-				{MessageTimestamp: 150},
-			},
-			"chat-3": {
-				{MessageTimestamp: 77},
-			},
-		},
+	app := newTestApp(t)
+	app.state.Chats = map[string]Chat{
+		"chat-1": {ID: "chat-1", ConversationTimestamp: 10},
+		"chat-2": {ID: "chat-2", ConversationTimestamp: 200},
 	}
 
-	changed := reconcileChatTimestamps(state)
-	if !changed {
-		t.Fatalf("expected timestamp reconciliation to report changes")
+	msgs := map[string][]WireMessage{
+		"chat-1": {{Key: WireKey{ID: "a"}, MessageTimestamp: 40, Message: map[string]any{}}, {Key: WireKey{ID: "b"}, MessageTimestamp: 90, Message: map[string]any{}}},
+		"chat-2": {{Key: WireKey{ID: "c"}, MessageTimestamp: 150, Message: map[string]any{}}},
+		"chat-3": {{Key: WireKey{ID: "d"}, MessageTimestamp: 77, Message: map[string]any{}}},
 	}
-	if got := state.Chats["chat-1"].ConversationTimestamp; got != 90 {
+	for chatID, list := range msgs {
+		for _, m := range list {
+			if err := app.insertMessageToDB(chatID, m); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+		}
+	}
+
+	app.reconcileChatTimestampsFromDB()
+
+	if got := app.state.Chats["chat-1"].ConversationTimestamp; got != 90 {
 		t.Fatalf("chat-1 timestamp = %d, want 90", got)
 	}
-	if got := state.Chats["chat-2"].ConversationTimestamp; got != 200 {
-		t.Fatalf("chat-2 timestamp = %d, want 200", got)
+	if got := app.state.Chats["chat-2"].ConversationTimestamp; got != 200 {
+		t.Fatalf("chat-2 timestamp = %d, want 200 (should not decrease)", got)
 	}
-	if got := state.Chats["chat-3"].ConversationTimestamp; got != 77 {
+	if got := app.state.Chats["chat-3"].ConversationTimestamp; got != 77 {
 		t.Fatalf("chat-3 timestamp = %d, want 77", got)
 	}
 }
@@ -160,12 +184,15 @@ func TestUpsertMessageDedupesAndKeepsUnreadStable(t *testing.T) {
 	app.upsertMessage("15551230001@s.whatsapp.net", first)
 	app.upsertMessage("15551230001@s.whatsapp.net", second)
 
-	msgs := app.state.Messages["15551230001@s.whatsapp.net"]
-	if len(msgs) != 1 {
-		t.Fatalf("message count = %d, want 1", len(msgs))
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("message count in DB = %d, want 1", count)
 	}
-	if got, _ := msgs[0].Message["conversation"].(string); got != "updated" {
-		t.Fatalf("message body = %q, want updated", got)
+	var msgJSON string
+	_ = app.db.QueryRow(`SELECT message_json FROM messages WHERE chat_id = '15551230001@s.whatsapp.net' AND id = 'm1'`).Scan(&msgJSON)
+	if !strings.Contains(msgJSON, "updated") {
+		t.Fatalf("message_json = %q, want updated body", msgJSON)
 	}
 	if got := app.state.Chats["15551230001@s.whatsapp.net"].UnreadCount; got != 1 {
 		t.Fatalf("unread count = %d, want 1", got)
@@ -297,8 +324,8 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	app.state = PersistedState{
 		Chats:    map[string]Chat{"chat-1": {ID: "chat-1"}},
 		Contacts: map[string]Contact{"chat-1": {ID: "chat-1"}},
-		Messages: map[string][]WireMessage{"chat-1": {{Key: WireKey{ID: "m1"}}}},
 	}
+	_ = app.insertMessageToDB("chat-1", WireMessage{Key: WireKey{ID: "m1"}, Message: map[string]any{}})
 
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	rec := httptest.NewRecorder()
@@ -310,7 +337,7 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	if app.started || app.connected {
 		t.Fatalf("app flags not cleared after logout")
 	}
-	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 || len(app.state.Messages) != 0 {
+	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 {
 		t.Fatalf("app state was not cleared")
 	}
 
@@ -330,7 +357,7 @@ func TestHandleLogoutSuccess(t *testing.T) {
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatalf("failed to parse persisted state: %v", err)
 	}
-	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 || len(persisted.Messages) != 0 {
+	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 {
 		t.Fatalf("persisted state was not cleared")
 	}
 }
@@ -365,7 +392,7 @@ func TestHandleLogoutRemovesLocalCacheArtifacts(t *testing.T) {
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatalf("failed to parse recreated state file: %v", err)
 	}
-	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 || len(persisted.Messages) != 0 {
+	if len(persisted.Chats) != 0 || len(persisted.Contacts) != 0 {
 		t.Fatalf("recreated persisted state was not empty")
 	}
 	if app.db != nil {
@@ -491,7 +518,6 @@ func TestHandleLogoutFailsWhenStateCannotBePersisted(t *testing.T) {
 	app.state = PersistedState{
 		Chats:    map[string]Chat{"chat-1": {ID: "chat-1"}},
 		Contacts: map[string]Contact{"chat-1": {ID: "chat-1"}},
-		Messages: map[string][]WireMessage{"chat-1": {{Key: WireKey{ID: "m1"}}}},
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
@@ -516,12 +542,10 @@ func TestPersistStateWithErr(t *testing.T) {
 		Contacts: map[string]Contact{
 			"15551230001@s.whatsapp.net": {ID: "15551230001@s.whatsapp.net", Notify: "Alex"},
 		},
-		Messages: map[string][]WireMessage{
-			"15551230001@s.whatsapp.net": {
-				{Key: WireKey{ID: "m1", RemoteJID: "15551230001@s.whatsapp.net"}, MessageTimestamp: 42, Message: map[string]any{"conversation": "hello"}},
-			},
-		},
 	}
+	_ = app.insertMessageToDB("15551230001@s.whatsapp.net", WireMessage{
+		Key: WireKey{ID: "m1", RemoteJID: "15551230001@s.whatsapp.net"}, MessageTimestamp: 42, Message: map[string]any{"conversation": "hello"},
+	})
 
 	if err := app.persistStateWithErr(); err != nil {
 		t.Fatalf("persist state failed: %v", err)
@@ -539,8 +563,11 @@ func TestPersistStateWithErr(t *testing.T) {
 	if got := persisted.Chats["15551230001@s.whatsapp.net"].Name; got != "Alex" {
 		t.Fatalf("chat name = %q, want Alex", got)
 	}
-	if got := persisted.Messages["15551230001@s.whatsapp.net"][0].Key.ID; got != "m1" {
-		t.Fatalf("message id = %q, want m1", got)
+	// Messages are now in SQLite, not JSON — verify via DB.
+	var msgID string
+	_ = app.db.QueryRow(`SELECT id FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&msgID)
+	if msgID != "m1" {
+		t.Fatalf("message id in DB = %q, want m1", msgID)
 	}
 }
 
@@ -596,12 +623,16 @@ func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
 	if chat.ConversationTimestamp != 77 {
 		t.Fatalf("chat timestamp = %d, want 77", chat.ConversationTimestamp)
 	}
-	msgs := app.state.Messages["15551230001@s.whatsapp.net"]
-	if len(msgs) != 1 {
-		t.Fatalf("message count = %d, want 1", len(msgs))
+	// Messages are migrated into SQLite during loadState.
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("migrated message count = %d, want 1", count)
 	}
-	if msgs[0].Key.RemoteJID != "15551230001@s.whatsapp.net" {
-		t.Fatalf("remote jid = %q, want canonical jid", msgs[0].Key.RemoteJID)
+	var remoteJID string
+	_ = app.db.QueryRow(`SELECT chat_id FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&remoteJID)
+	if remoteJID != "15551230001@s.whatsapp.net" {
+		t.Fatalf("chat_id = %q, want canonical jid", remoteJID)
 	}
 }
 
@@ -617,7 +648,7 @@ func TestLoadStateCorruptionFallsBackToBootstrap(t *testing.T) {
 	if !app.needsBootstrapSync {
 		t.Fatalf("expected bootstrap mode after corrupt state")
 	}
-	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 || len(app.state.Messages) != 0 {
+	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 {
 		t.Fatalf("expected in-memory state reset after corrupt state")
 	}
 	if _, err := os.Stat(app.cachePath); !errors.Is(err, os.ErrNotExist) {
@@ -895,7 +926,11 @@ func TestHandleMessagesCapsLimit(t *testing.T) {
 			Message:          map[string]any{"conversation": fmt.Sprintf("msg %03d", i)},
 		})
 	}
-	app.state.Messages[chatID] = msgs
+	for _, m := range msgs {
+		if err := app.insertMessageToDB(chatID, m); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&limit=9999", nil)
 	rec := httptest.NewRecorder()
@@ -923,12 +958,11 @@ func TestHandleMessagesCapsLimit(t *testing.T) {
 
 func TestHandlersRequiringWhatsAppConnectionReturnConflictWhenDisconnected(t *testing.T) {
 	app := newTestApp(t)
-	app.state.Messages["15551230001@s.whatsapp.net"] = []WireMessage{
-		{
-			Key:        WireKey{ID: "m1", RemoteJID: "15551230001@s.whatsapp.net"},
-			MediaProto: "ZmFrZQ==",
-		},
-	}
+	_ = app.insertMessageToDB("15551230001@s.whatsapp.net", WireMessage{
+		Key:        WireKey{ID: "m1", RemoteJID: "15551230001@s.whatsapp.net"},
+		MediaProto: "ZmFrZQ==",
+		Message:    map[string]any{},
+	})
 
 	tests := []struct {
 		name string
@@ -1038,5 +1072,261 @@ func TestValidateSendFileInput(t *testing.T) {
 	}
 	if err := validateSendFileInput(textPath, "document"); err != nil {
 		t.Fatalf("document validation failed: %v", err)
+	}
+}
+
+// --- DB-layer tests added after SQLite migration ---
+
+func TestInsertAndScanMessageRoundTrip(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	want := WireMessage{
+		Key:              WireKey{ID: "rt1", RemoteJID: chatID, FromMe: true, Participant: ""},
+		MessageTimestamp: 500,
+		PushName:         "Nav",
+		ReceiptStatus:    "sent",
+		MediaProto:       "dGVzdA==",
+		Message:          map[string]any{"conversation": "hello round trip"},
+	}
+	if err := app.insertMessageToDB(chatID, want); err != nil {
+		t.Fatalf("insertMessageToDB: %v", err)
+	}
+
+	rows, err := app.db.Query(`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto FROM messages WHERE id = 'rt1'`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("no row found after insert")
+	}
+	got, err := scanMessageRow(rows)
+	if err != nil {
+		t.Fatalf("scanMessageRow: %v", err)
+	}
+	if got.Key.ID != want.Key.ID {
+		t.Fatalf("id = %q, want %q", got.Key.ID, want.Key.ID)
+	}
+	if got.Key.FromMe != want.Key.FromMe {
+		t.Fatalf("from_me = %v, want %v", got.Key.FromMe, want.Key.FromMe)
+	}
+	if got.MessageTimestamp != want.MessageTimestamp {
+		t.Fatalf("ts = %d, want %d", got.MessageTimestamp, want.MessageTimestamp)
+	}
+	if got.PushName != want.PushName {
+		t.Fatalf("push_name = %q, want %q", got.PushName, want.PushName)
+	}
+	if got.ReceiptStatus != want.ReceiptStatus {
+		t.Fatalf("receipt = %q, want %q", got.ReceiptStatus, want.ReceiptStatus)
+	}
+	if got.MediaProto != want.MediaProto {
+		t.Fatalf("media_proto = %q, want %q", got.MediaProto, want.MediaProto)
+	}
+	if got.Message["conversation"] != "hello round trip" {
+		t.Fatalf("message_json = %v, want conversation=hello round trip", got.Message)
+	}
+}
+
+func TestHandleMessagesBasicFetch(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	for i, body := range []string{"first", "second", "third"} {
+		if err := app.insertMessageToDB(chatID, WireMessage{
+			Key:              WireKey{ID: fmt.Sprintf("m%d", i+1), RemoteJID: chatID},
+			MessageTimestamp: int64(i + 1),
+			Message:          map[string]any{"conversation": body},
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID, nil), app)
+	rec := httptest.NewRecorder()
+	app.handleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("message count = %d, want 3", len(body.Messages))
+	}
+	// Chronological order: oldest first.
+	if body.Messages[0].Key.ID != "m1" || body.Messages[2].Key.ID != "m3" {
+		t.Fatalf("order wrong: first=%q last=%q", body.Messages[0].Key.ID, body.Messages[2].Key.ID)
+	}
+}
+
+func TestHandleMessagesBeforeCursor(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	for i := 1; i <= 10; i++ {
+		if err := app.insertMessageToDB(chatID, WireMessage{
+			Key:              WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID},
+			MessageTimestamp: int64(i * 100),
+			Message:          map[string]any{},
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Fetch 3 messages before ts=600 → should return m3(300), m4(400), m5(500).
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&before=600&limit=3", nil), app)
+	rec := httptest.NewRecorder()
+	app.handleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("message count = %d, want 3", len(body.Messages))
+	}
+	if body.Messages[0].Key.ID != "m3" {
+		t.Fatalf("first = %q, want m3", body.Messages[0].Key.ID)
+	}
+	if body.Messages[2].Key.ID != "m5" {
+		t.Fatalf("last = %q, want m5", body.Messages[2].Key.ID)
+	}
+}
+
+func TestHandleMessagesEmptyChat(t *testing.T) {
+	app := newTestApp(t)
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId=99999@s.whatsapp.net", nil), app)
+	rec := httptest.NewRecorder()
+	app.handleMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(body.Messages) != 0 {
+		t.Fatalf("expected empty messages, got %d", len(body.Messages))
+	}
+}
+
+func TestUpdateReceiptStatusDoesNotDowngrade(t *testing.T) {
+	app := newTestApp(t)
+	if err := app.insertMessageToDB("chat-1", WireMessage{
+		Key: WireKey{ID: "x", RemoteJID: "chat-1", FromMe: true}, ReceiptStatus: "read", Message: map[string]any{},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	changed := app.updateReceiptStatus("chat-1", []string{"x"}, "delivered")
+	if changed {
+		t.Fatalf("updateReceiptStatus should not downgrade read → delivered")
+	}
+	var r string
+	_ = app.db.QueryRow(`SELECT receipt FROM messages WHERE id = 'x'`).Scan(&r)
+	if r != "read" {
+		t.Fatalf("receipt = %q, want read (no downgrade)", r)
+	}
+}
+
+func TestUpsertMessageWritesToDB(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	app.upsertMessage(chatID, WireMessage{
+		Key:              WireKey{ID: "db1", FromMe: false},
+		MessageTimestamp: 999,
+		Message:          map[string]any{"conversation": "in db"},
+	})
+
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id = 'db1'`, chatID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("message not found in DB after upsertMessage, count=%d", count)
+	}
+}
+
+func TestUpsertMessageDuringHistorySyncWritesToDBButSkipsJSON(t *testing.T) {
+	app := newTestApp(t)
+	app.historySyncing = true
+	chatID := "15551230001@s.whatsapp.net"
+
+	app.upsertMessage(chatID, WireMessage{
+		Key:              WireKey{ID: "hs1", FromMe: false},
+		MessageTimestamp: 200,
+		Message:          map[string]any{"conversation": "history"},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	// Message must be in DB.
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id = 'hs1'`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected message in DB during history sync, got count=%d", count)
+	}
+	// JSON state file must NOT have been written.
+	raw, _ := os.ReadFile(app.cachePath)
+	if len(raw) != 0 {
+		t.Fatalf("JSON file was written during history sync: %q", string(raw))
+	}
+}
+
+func TestDeleteMessageRemovesFromDB(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	if err := app.insertMessageToDB(chatID, WireMessage{
+		Key: WireKey{ID: "del1", RemoteJID: chatID}, Message: map[string]any{},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, err := app.db.Exec(`DELETE FROM messages WHERE chat_id = ? AND id = ?`, chatID, "del1")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE id = 'del1'`).Scan(&count)
+	if count != 0 {
+		t.Fatalf("message still in DB after delete, count=%d", count)
+	}
+}
+
+func TestJSONMigrationMovesMessagesToSQLite(t *testing.T) {
+	app := newTestApp(t)
+	// Old-format state.json with inline messages.
+	old := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex","conversationTimestamp":42}},"messages":{"15551230001":[{"key":{"id":"migrated1","remoteJid":"15551230001","fromMe":false},"message":{"conversation":"migrated"},"messageTimestamp":42}]}}`
+	if err := os.WriteFile(app.cachePath, []byte(old), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	app.loadState()
+
+	// Message should be in SQLite with canonical chat ID.
+	var id, chatID string
+	err := app.db.QueryRow(`SELECT id, chat_id FROM messages WHERE id = 'migrated1'`).Scan(&id, &chatID)
+	if err != nil {
+		t.Fatalf("migrated message not found in DB: %v", err)
+	}
+	if chatID != "15551230001@s.whatsapp.net" {
+		t.Fatalf("chat_id = %q, want canonical form", chatID)
+	}
+
+	// state.json should be rewritten without messages key.
+	raw, err := os.ReadFile(app.cachePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(raw), `"messages"`) {
+		t.Fatalf("state.json still contains messages after migration")
 	}
 }

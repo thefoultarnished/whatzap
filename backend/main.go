@@ -90,9 +90,8 @@ type Contact struct {
 }
 
 type PersistedState struct {
-	Chats    map[string]Chat          `json:"chats"`
-	Contacts map[string]Contact       `json:"contacts"`
-	Messages map[string][]WireMessage `json:"messages"`
+	Chats    map[string]Chat    `json:"chats"`
+	Contacts map[string]Contact `json:"contacts"`
 }
 
 type wsClient struct {
@@ -285,7 +284,6 @@ func NewApp() (*App, error) {
 		state: PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
-			Messages: map[string][]WireMessage{},
 		},
 	}
 	if err := app.initPersistentResources(); err != nil {
@@ -329,6 +327,24 @@ func (a *App) initPersistentResources() error {
 		name    TEXT NOT NULL DEFAULT '',
 		allowed INTEGER NOT NULL DEFAULT 0
 	)`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
+	if _, err := rawDB.Exec(`
+		CREATE TABLE IF NOT EXISTS messages (
+			id           TEXT NOT NULL,
+			chat_id      TEXT NOT NULL,
+			from_me      INTEGER NOT NULL DEFAULT 0,
+			participant  TEXT NOT NULL DEFAULT '',
+			ts           INTEGER NOT NULL DEFAULT 0,
+			push_name    TEXT NOT NULL DEFAULT '',
+			receipt      TEXT NOT NULL DEFAULT '',
+			message_json TEXT NOT NULL DEFAULT '{}',
+			media_proto  TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (chat_id, id, from_me)
+		);
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages (chat_id, ts);
+	`); err != nil {
 		_ = rawDB.Close()
 		return err
 	}
@@ -657,6 +673,47 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 	}
 }
 
+func (a *App) insertMessageToDB(chatID string, msg WireMessage) error {
+	id := msg.Key.ID
+	if id == "" {
+		id = dedupeKey(msg)
+	}
+	fromMe := 0
+	if msg.Key.FromMe {
+		fromMe = 1
+	}
+	msgJSON, err := json.Marshal(msg.Message)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(`
+		INSERT OR REPLACE INTO messages (id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, chatID, fromMe, msg.Key.Participant, msg.MessageTimestamp, msg.PushName, msg.ReceiptStatus, string(msgJSON), msg.MediaProto)
+	return err
+}
+
+func scanMessageRow(rows *sql.Rows) (WireMessage, error) {
+	var (
+		id, chatID, participant, pushName, receipt, messageJSON, mediaProto string
+		fromMe                                                               int
+		ts                                                                   int64
+	)
+	if err := rows.Scan(&id, &chatID, &fromMe, &participant, &ts, &pushName, &receipt, &messageJSON, &mediaProto); err != nil {
+		return WireMessage{}, err
+	}
+	var message map[string]any
+	_ = json.Unmarshal([]byte(messageJSON), &message)
+	return WireMessage{
+		Key:              WireKey{ID: id, RemoteJID: chatID, FromMe: fromMe == 1, Participant: participant},
+		MessageTimestamp: ts,
+		PushName:         pushName,
+		ReceiptStatus:    receipt,
+		Message:          message,
+		MediaProto:       mediaProto,
+	}, nil
+}
+
 func (a *App) upsertMessage(chatID string, msg WireMessage) {
 	chatID = a.canonicalizeChatID(chatID)
 	if chatID == "" {
@@ -667,31 +724,25 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 		msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
 	}
 
+	// Determine if this is a new message (for unread counting) before inserting.
+	id := msg.Key.ID
+	if id == "" {
+		id = dedupeKey(msg)
+	}
+	fromMe := 0
+	if msg.Key.FromMe {
+		fromMe = 1
+	}
+	var existing int
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id = ? AND from_me = ?`, chatID, id, fromMe).Scan(&existing)
+	isNew := existing == 0
+
+	if err := a.insertMessageToDB(chatID, msg); err != nil {
+		log.Printf("upsertMessage: db write: %v", err)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	list := a.state.Messages[chatID]
-	key := dedupeKey(msg)
-	found := -1
-	for i := range list {
-		if dedupeKey(list[i]) == key {
-			found = i
-			break
-		}
-	}
-	isNew := found < 0
-	if found >= 0 {
-		list[found] = msg
-	} else {
-		list = append(list, msg)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].MessageTimestamp < list[j].MessageTimestamp
-	})
-	if len(list) > 200 {
-		list = list[len(list)-200:]
-	}
-	a.state.Messages[chatID] = list
 
 	chat := a.state.Chats[chatID]
 	chat.ID = chatID
@@ -757,28 +808,32 @@ func (a *App) updateReceiptStatus(chatID string, ids []string, status string) bo
 		return false
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	uniqueIDs := make([]string, 0, len(idSet))
+	for id := range idSet {
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	placeholders := strings.Repeat("?,", len(uniqueIDs))
+	placeholders = placeholders[:len(placeholders)-1]
 
-	list := a.state.Messages[chatID]
-	changed := false
-	for i := range list {
-		if !list[i].Key.FromMe {
-			continue
-		}
-		if _, ok := idSet[list[i].Key.ID]; !ok {
-			continue
-		}
-		if receiptStatusRank(status) > receiptStatusRank(list[i].ReceiptStatus) {
-			list[i].ReceiptStatus = status
-			changed = true
-		}
+	// Only upgrade receipt status, never downgrade.
+	rankExpr := `CASE receipt WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2 WHEN 'read' THEN 3 WHEN 'played' THEN 4 ELSE 0 END`
+	args := []any{status, chatID}
+	for _, id := range uniqueIDs {
+		args = append(args, id)
 	}
-	if changed {
-		a.state.Messages[chatID] = list
-		go a.persistState()
+	args = append(args, receiptStatusRank(status))
+
+	result, err := a.db.Exec(fmt.Sprintf(`
+		UPDATE messages SET receipt = ?
+		WHERE chat_id = ? AND from_me = 1 AND id IN (%s)
+		AND %s < ?
+	`, placeholders, rankExpr), args...)
+	if err != nil {
+		log.Printf("updateReceiptStatus: %v", err)
+		return false
 	}
-	return changed
+	n, _ := result.RowsAffected()
+	return n > 0
 }
 
 func (a *App) startSession() error {
@@ -875,13 +930,9 @@ func (a *App) refreshGroupMetadata() int {
 			changed++
 		}
 		if ch.ConversationTimestamp == 0 {
-			msgs := a.state.Messages[cid]
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].MessageTimestamp > 0 {
-					ch.ConversationTimestamp = msgs[i].MessageTimestamp
-					break
-				}
-			}
+			var maxTS int64
+			_ = a.db.QueryRow(`SELECT COALESCE(MAX(ts), 0) FROM messages WHERE chat_id = ? AND ts > 0`, cid).Scan(&maxTS)
+			ch.ConversationTimestamp = maxTS
 		}
 		a.state.Chats[cid] = ch
 		delete(a.state.Contacts, cid)
@@ -1369,13 +1420,37 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 		limit = min(n, maxMessagesResponseLimit)
 	}
 
-	a.mu.RLock()
-	all := append([]WireMessage(nil), a.state.Messages[chatID]...)
-	a.mu.RUnlock()
-	if len(all) > limit {
-		all = all[len(all)-limit:]
+	const q = `SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
+		FROM messages WHERE chat_id = ? %s ORDER BY ts DESC LIMIT ?`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if beforeStr := strings.TrimSpace(r.URL.Query().Get("before")); beforeStr != "" {
+		beforeTS, _ := strconv.ParseInt(beforeStr, 10, 64)
+		rows, err = a.db.Query(fmt.Sprintf(q, "AND ts < ?"), chatID, beforeTS, limit)
+	} else {
+		rows, err = a.db.Query(fmt.Sprintf(q, ""), chatID, limit)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": all})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	msgs := make([]WireMessage, 0, limit)
+	for rows.Next() {
+		msg, err := scanMessageRow(rows)
+		if err != nil {
+			continue
+		}
+		msgs = append(msgs, msg)
+	}
+	// Results came DESC; reverse to chronological order for the TUI.
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
 }
 
 func (a *App) requireConnectedClient(w http.ResponseWriter) bool {
@@ -1601,23 +1676,32 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	chat := a.state.Chats[req.ChatID]
 	chat.ID = req.ChatID
 	unreadToMark := chat.UnreadCount
-	msgs := a.state.Messages[req.ChatID]
-	senderToIDs := make(map[string][]types.MessageID)
-	for i := len(msgs) - 1; i >= 0 && unreadToMark > 0; i-- {
-		msg := msgs[i]
-		if msg.Key.FromMe || msg.Key.ID == "" {
-			continue
-		}
-		sender := msg.Key.Participant
-		if sender == "" {
-			sender = msg.Key.RemoteJID
-		}
-		senderToIDs[sender] = append(senderToIDs[sender], types.MessageID(msg.Key.ID))
-		unreadToMark--
-	}
 	chat.UnreadCount = 0
 	a.state.Chats[req.ChatID] = chat
 	a.mu.Unlock()
+
+	senderToIDs := make(map[string][]types.MessageID)
+	if unreadToMark > 0 {
+		rows, err := a.db.Query(`
+			SELECT id, participant, chat_id FROM messages
+			WHERE chat_id = ? AND from_me = 0 AND id != ''
+			ORDER BY ts DESC LIMIT ?
+		`, req.ChatID, unreadToMark)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id, participant, cid string
+				if rows.Scan(&id, &participant, &cid) != nil {
+					continue
+				}
+				sender := participant
+				if sender == "" {
+					sender = cid
+				}
+				senderToIDs[sender] = append(senderToIDs[sender], types.MessageID(id))
+			}
+		}
+	}
 
 	// actually inform WhatsApp server!
 	chatJID, _ := types.ParseJID(req.ChatID)
@@ -1739,17 +1823,8 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Remove from local state
-	a.mu.Lock()
-	if msgs, ok := a.state.Messages[req.ChatID]; ok {
-		for i, m := range msgs {
-			if m.Key.ID == req.MessageID {
-				a.state.Messages[req.ChatID] = append(msgs[:i], msgs[i+1:]...)
-				break
-			}
-		}
-	}
-	a.mu.Unlock()
+	// Remove from DB
+	_, _ = a.db.Exec(`DELETE FROM messages WHERE chat_id = ? AND id = ?`, req.ChatID, req.MessageID)
 	a.persistState()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1814,7 +1889,6 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	a.state = PersistedState{
 		Chats:    map[string]Chat{},
 		Contacts: map[string]Contact{},
-		Messages: map[string][]WireMessage{},
 	}
 	a.mu.Unlock()
 	// Close all DB connections before deleting files (required on Windows to release file locks).
@@ -2144,7 +2218,6 @@ func (a *App) loadState() {
 		a.state = PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
-			Messages: map[string][]WireMessage{},
 		}
 		a.needsBootstrapSync = true
 		a.mu.Unlock()
@@ -2159,18 +2232,32 @@ func (a *App) loadState() {
 	if state.Contacts == nil {
 		state.Contacts = map[string]Contact{}
 	}
-	if state.Messages == nil {
-		state.Messages = map[string][]WireMessage{}
+
+	// One-time migration: move any messages that were stored in the old JSON format into SQLite.
+	var legacy struct {
+		Messages map[string][]WireMessage `json:"messages"`
 	}
+	if json.Unmarshal(raw, &legacy) == nil && len(legacy.Messages) > 0 {
+		for rawChatID, msgs := range legacy.Messages {
+			chatID := a.canonicalizeChatID(rawChatID)
+			for _, msg := range msgs {
+				msg.Key.RemoteJID = a.canonicalizeChatID(msg.Key.RemoteJID)
+				if msg.Key.Participant != "" {
+					msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
+				}
+				_ = a.insertMessageToDB(chatID, msg)
+			}
+		}
+		log.Printf("loadState: migrated %d chats from JSON to SQLite", len(legacy.Messages))
+	}
+
 	a.migrateStateCanonicalIDs(&state)
-	reconciled := reconcileChatTimestamps(&state)
 	a.mu.Lock()
 	a.state = state
 	a.needsBootstrapSync = false
 	a.mu.Unlock()
-	if reconciled {
-		a.persistState()
-	}
+	a.reconcileChatTimestampsFromDB()
+	a.persistState()
 }
 
 // seeding chats from store so UI isn't empty on first start
@@ -2337,14 +2424,48 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return nil
 }
 
+// reconcileChatTimestampsFromDB queries the DB for the max message timestamp per
+// chat and bumps a.state.Chats entries that are behind.
+func (a *App) reconcileChatTimestampsFromDB() {
+	if a.db == nil {
+		return
+	}
+	rows, err := a.db.Query(`SELECT chat_id, MAX(ts) FROM messages WHERE ts > 0 GROUP BY chat_id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for rows.Next() {
+		var chatID string
+		var maxTS int64
+		if rows.Scan(&chatID, &maxTS) != nil {
+			continue
+		}
+		chat := a.state.Chats[chatID]
+		if maxTS > chat.ConversationTimestamp {
+			chat.ID = chatID
+			chat.ConversationTimestamp = maxTS
+			a.state.Chats[chatID] = chat
+		}
+	}
+}
+
 func reconcileChatTimestamps(state *PersistedState) bool {
+	// Kept for tests that work with in-memory state snapshots only.
+	return false
+}
+
+func reconcileChatTimestampsFromMessages(state *PersistedState, msgs map[string][]WireMessage) bool {
 	if state == nil {
 		return false
 	}
 	changed := false
-	for chatID, msgs := range state.Messages {
+	for chatID, list := range msgs {
 		var latest int64
-		for _, msg := range msgs {
+		for _, msg := range list {
 			if msg.MessageTimestamp > latest {
 				latest = msg.MessageTimestamp
 			}
@@ -2495,30 +2616,8 @@ func (a *App) migrateStateCanonicalIDs(state *PersistedState) {
 		newContacts[cid] = merged
 	}
 
-	newMessages := map[string][]WireMessage{}
-	for rawID, msgs := range state.Messages {
-		cid := a.canonicalizeChatID(rawID)
-		for _, m := range msgs {
-			m.Key.RemoteJID = a.canonicalizeChatID(m.Key.RemoteJID)
-			if m.Key.RemoteJID == "" {
-				m.Key.RemoteJID = cid
-			}
-			if m.Key.Participant != "" {
-				m.Key.Participant = a.canonicalizeChatID(m.Key.Participant)
-			}
-			newMessages[cid] = append(newMessages[cid], m)
-		}
-		sort.Slice(newMessages[cid], func(i, j int) bool {
-			return newMessages[cid][i].MessageTimestamp < newMessages[cid][j].MessageTimestamp
-		})
-		if len(newMessages[cid]) > 200 {
-			newMessages[cid] = newMessages[cid][len(newMessages[cid])-200:]
-		}
-	}
-
 	state.Chats = newChats
 	state.Contacts = newContacts
-	state.Messages = newMessages
 }
 
 func (a *App) upsertPermission(phone, name string) {
@@ -2659,21 +2758,15 @@ func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "chatId and msgId required")
 		return
 	}
-	a.mu.RLock()
-	msgs := a.state.Messages[chatID]
-	a.mu.RUnlock()
-	var target *WireMessage
-	for i := range msgs {
-		if msgs[i].Key.ID == msgID {
-			target = &msgs[i]
-			break
-		}
-	}
-	if target == nil || target.MediaProto == "" {
+	var mediaProto string
+	if err := a.db.QueryRow(
+		`SELECT media_proto FROM messages WHERE chat_id = ? AND id = ? AND media_proto != ''`,
+		chatID, msgID,
+	).Scan(&mediaProto); err != nil || mediaProto == "" {
 		writeErr(w, http.StatusNotFound, "media not found")
 		return
 	}
-	b, err := base64.StdEncoding.DecodeString(target.MediaProto)
+	b, err := base64.StdEncoding.DecodeString(mediaProto)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "decode error")
 		return
