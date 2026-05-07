@@ -252,6 +252,73 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return x, x.setTopBar(v.err.Error())
 		}
 		x.msgs[v.chatID] = v.msgs
+		if x.loadingOlder == nil {
+			x.loadingOlder = map[string]bool{}
+		}
+		if x.noMoreOlder == nil {
+			x.noMoreOlder = map[string]bool{}
+		}
+		delete(x.loadingOlder, v.chatID)
+		if v.hasMore {
+			delete(x.noMoreOlder, v.chatID)
+		} else {
+			x.noMoreOlder[v.chatID] = true
+		}
+	case olderMsgsMsg:
+		if x.loadingOlder == nil {
+			x.loadingOlder = map[string]bool{}
+		}
+		if x.noMoreOlder == nil {
+			x.noMoreOlder = map[string]bool{}
+		}
+		delete(x.loadingOlder, v.chatID)
+		if v.err != nil {
+			x.err = ""
+			return x, x.setTopBar(v.err.Error())
+		}
+		if !v.hasMore {
+			x.noMoreOlder[v.chatID] = true
+		}
+		if len(v.msgs) == 0 {
+			return x, nil
+		}
+		// Prepend, dedupe by message key. Existing list is chronological (oldest first).
+		existing := x.msgs[v.chatID]
+		seen := make(map[string]struct{}, len(existing))
+		for _, m := range existing {
+			seen[m.Key.ID] = struct{}{}
+		}
+		fresh := make([]wireMsg, 0, len(v.msgs))
+		for _, m := range v.msgs {
+			if _, ok := seen[m.Key.ID]; ok {
+				continue
+			}
+			fresh = append(fresh, m)
+		}
+		if len(fresh) == 0 {
+			return x, nil
+		}
+		merged := make([]wireMsg, 0, len(fresh)+len(existing))
+		merged = append(merged, fresh...)
+		merged = append(merged, existing...)
+		x.msgs[v.chatID] = merged
+		if x.mainCache != nil {
+			x.mainCache.result = ""
+		}
+	case searchResultsMsg:
+		x.msgSearchLoading = false
+		if v.err != nil {
+			x.msgSearchErr = v.err.Error()
+			x.msgSearchResults = nil
+			x.msgSearchSel = 0
+			return x, nil
+		}
+		x.msgSearchErr = ""
+		x.msgSearchResults = v.results
+		x.msgSearchSel = 0
+		if x.mainCache != nil {
+			x.mainCache.result = ""
+		}
 	case sentMsg:
 		if v.err != nil {
 			if v.pendingID != "" {
@@ -1018,6 +1085,18 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if x.emojiPickerOpen {
 		return x.handleEmojiPicker(k)
 	}
+	if k.Type == tea.KeyCtrlF && x.mode != "msgsearch" {
+		x.mode = "msgsearch"
+		x.msgSearchInput = ""
+		x.msgSearchResults = nil
+		x.msgSearchSel = 0
+		x.msgSearchLoading = false
+		x.msgSearchErr = ""
+		if x.mainCache != nil {
+			x.mainCache.result = ""
+		}
+		return x, nil
+	}
 	switch x.mode {
 	case "nav":
 		switch k.String() {
@@ -1100,6 +1179,91 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 					x.ensureSideVisible(x.sideViewRows())
 				}
 			}
+		}
+	case "msgsearch":
+		switch k.Type {
+		case tea.KeyEsc:
+			if x.active != "" {
+				x.mode = "chat"
+			} else {
+				x.mode = "nav"
+			}
+			x.msgSearchInput = ""
+			x.msgSearchResults = nil
+			x.msgSearchSel = 0
+			x.msgSearchLoading = false
+			x.msgSearchErr = ""
+			if x.mainCache != nil {
+				x.mainCache.result = ""
+			}
+			return x, nil
+		case tea.KeyBackspace:
+			if x.msgSearchInput != "" {
+				x.msgSearchInput = graphemeDeleteLast(x.msgSearchInput)
+				x.msgSearchResults = nil
+				x.msgSearchSel = 0
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+			}
+			return x, nil
+		case tea.KeyUp:
+			if len(x.msgSearchResults) > 0 {
+				x.msgSearchSel = wrappedIndex(x.msgSearchSel, len(x.msgSearchResults), -1)
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+			}
+			return x, nil
+		case tea.KeyDown:
+			if len(x.msgSearchResults) > 0 {
+				x.msgSearchSel = wrappedIndex(x.msgSearchSel, len(x.msgSearchResults), 1)
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+			}
+			return x, nil
+		case tea.KeyEnter:
+			q := strings.TrimSpace(x.msgSearchInput)
+			// First Enter on a fresh query: fire the search.
+			if q != "" && len(x.msgSearchResults) == 0 && !x.msgSearchLoading {
+				x.msgSearchLoading = true
+				x.msgSearchErr = ""
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+				return x, searchMsgs(x.client, x.baseURL, q)
+			}
+			// Second Enter (with results): jump to selected.
+			if len(x.msgSearchResults) == 0 {
+				return x, nil
+			}
+			hit := x.msgSearchResults[x.msgSearchSel]
+			x.active = hit.ChatID
+			x.mode = "chat"
+			x.sidebarFocused = false
+			x.scroll = 0
+			x.selectedMsgID = hit.MessageID
+			x.msgSearchInput = ""
+			x.msgSearchResults = nil
+			x.msgSearchSel = 0
+			x.msgSearchErr = ""
+			if x.mainCache != nil {
+				x.mainCache.result = ""
+			}
+			// Fetch a window of messages around the hit. before=ts+1 puts the hit
+			// at the top of the page (most recent of the returned set).
+			return x, getMsgsBefore(x.client, x.baseURL, hit.ChatID, 100, hit.Timestamp+1)
+		default:
+			if len(k.Runes) > 0 {
+				x.msgSearchInput += string(k.Runes)
+				x.msgSearchResults = nil
+				x.msgSearchSel = 0
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+			}
+			return x, nil
 		}
 	case "chat":
 		inputLocked := x.chatInputLocked()
@@ -1321,6 +1485,9 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return x.openSelectedChat()
 			}
 			x.scroll++
+			if cmd := x.maybeLoadOlder(); cmd != nil {
+				return x, cmd
+			}
 		case tea.KeyDown:
 			if x.sidebarFocused {
 				f := x.filtered()
@@ -2174,4 +2341,37 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 		batch = append(batch, titleCmd)
 	}
 	return x, tea.Batch(batch...)
+}
+
+// maybeLoadOlder fires a lazy-load fetch for older messages if the user has
+// scrolled within `lazyLoadTriggerRows` rows of the top of the loaded window.
+// Returns nil if no fetch is needed (already loading, exhausted, or far from top).
+func (x *m) maybeLoadOlder() tea.Cmd {
+	if x.demoMode || x.active == "" {
+		return nil
+	}
+	chatID := x.active
+	if x.loadingOlder[chatID] || x.noMoreOlder[chatID] {
+		return nil
+	}
+	msgs := x.msgs[chatID]
+	if len(msgs) == 0 {
+		return nil
+	}
+	// scroll is rows-from-bottom. Total visible content rows ≈ len(msgs) (one row per msg
+	// is a lower bound; multi-line bubbles take more). Trigger when scroll is within
+	// `lazyLoadTriggerRows` of len(msgs).
+	const lazyLoadTriggerRows = 10
+	if x.scroll < len(msgs)-lazyLoadTriggerRows {
+		return nil
+	}
+	oldest := msgs[0].MessageTimestamp
+	if oldest <= 0 {
+		return nil
+	}
+	if x.loadingOlder == nil {
+		x.loadingOlder = map[string]bool{}
+	}
+	x.loadingOlder[chatID] = true
+	return getMsgsBefore(x.client, x.baseURL, chatID, 100, oldest)
 }

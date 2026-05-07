@@ -166,3 +166,55 @@ func TestAPICommandsSurfaceBackendErrors(t *testing.T) {
 		t.Fatalf("unexpected rename error: %v", msg.(whitelistSetMsg).err)
 	}
 }
+
+func TestSearchMsgsBuildsQueryAndDecodes(t *testing.T) {
+	var capturedQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		capturedQuery = r.URL.Query().Get("q")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"chatId":"c1","messageId":"m1","timestamp":42,"snippet":"x <b>foo</b> y"}]}`))
+	}))
+	defer srv.Close()
+
+	msg := searchMsgs(srv.Client(), srv.URL, "foo")()
+	res, ok := msg.(searchResultsMsg)
+	if !ok {
+		t.Fatalf("expected searchResultsMsg, got %T", msg)
+	}
+	if res.err != nil {
+		t.Fatalf("unexpected error: %v", res.err)
+	}
+	if capturedQuery != "foo" {
+		t.Fatalf("query sent = %q, want foo", capturedQuery)
+	}
+	if len(res.results) != 1 {
+		t.Fatalf("results = %d, want 1", len(res.results))
+	}
+	if res.results[0].ChatID != "c1" || res.results[0].MessageID != "m1" || res.results[0].Timestamp != 42 {
+		t.Fatalf("result fields wrong: %+v", res.results[0])
+	}
+	if !strings.Contains(res.results[0].Snippet, "<b>foo</b>") {
+		t.Fatalf("snippet missing highlight tags: %q", res.results[0].Snippet)
+	}
+}
+
+func TestSearchMsgsReturnsErrorOn5xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"db offline"}`))
+	}))
+	defer srv.Close()
+
+	msg := searchMsgs(srv.Client(), srv.URL, "anything")()
+	res := msg.(searchResultsMsg)
+	if res.err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(res.err.Error(), "500") {
+		t.Fatalf("unexpected error message: %v", res.err)
+	}
+}

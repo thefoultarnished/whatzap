@@ -114,6 +114,13 @@ type m struct {
 	contacts                                 map[string]contact
 	contactsByNumber                         map[string]contact
 	msgs                                     map[string][]wireMsg
+	loadingOlder                             map[string]bool // chatID → fetch in flight
+	noMoreOlder                              map[string]bool // chatID → backend exhausted
+	msgSearchInput                           string
+	msgSearchResults                         []searchHit
+	msgSearchSel                             int
+	msgSearchLoading                         bool
+	msgSearchErr                             string
 	active, mode, search, searchInput, input string
 	sel, scroll, sideScroll                  int
 	sidebarFocused                           bool
@@ -205,9 +212,35 @@ type contactsMsg struct {
 	err      error
 }
 type msgsMsg struct {
-	chatID string
-	msgs   []wireMsg
-	err    error
+	chatID  string
+	msgs    []wireMsg
+	hasMore bool
+	err     error
+}
+
+// olderMsgsMsg is delivered when a lazy-load page (older messages) returns.
+// hasMore comes from the backend's pagination metadata (true when more older
+// pages exist). `requested` is kept for tests written before hasMore landed.
+type olderMsgsMsg struct {
+	chatID    string
+	msgs      []wireMsg
+	hasMore   bool
+	requested int
+	err       error
+}
+
+type searchHit struct {
+	ChatID    string `json:"chatId"`
+	MessageID string `json:"messageId"`
+	FromMe    bool   `json:"fromMe"`
+	Timestamp int64  `json:"timestamp"`
+	Snippet   string `json:"snippet"`
+}
+
+type searchResultsMsg struct {
+	query   string
+	results []searchHit
+	err     error
 }
 type sentMsg struct {
 	chatID    string

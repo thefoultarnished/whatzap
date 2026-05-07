@@ -950,3 +950,287 @@ func TestHeaderAvatarInitials(t *testing.T) {
 		t.Fatalf("headerAvatarInitials() fallback = %q, want %q", got, "01")
 	}
 }
+
+// --- Lazy-load tests ---
+
+func mkMsg(id string, ts int64) wireMsg {
+	var msg wireMsg
+	msg.Key.ID = id
+	msg.MessageTimestamp = ts
+	return msg
+}
+
+func TestOlderMsgsMsgPrependsAndDedupes(t *testing.T) {
+	chatID := "15551230001@s.whatsapp.net"
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m3", 300), mkMsg("m4", 400)}},
+		loadingOlder: map[string]bool{chatID: true},
+		noMoreOlder:  map[string]bool{},
+	}
+	older := []wireMsg{mkMsg("m1", 100), mkMsg("m2", 200), mkMsg("m3", 300)} // m3 dup
+	next, _ := model.Update(olderMsgsMsg{chatID: chatID, msgs: older, hasMore: true})
+	got := next.(m)
+
+	all := got.msgs[chatID]
+	if len(all) != 4 {
+		t.Fatalf("merged length = %d, want 4", len(all))
+	}
+	wantIDs := []string{"m1", "m2", "m3", "m4"}
+	for i, want := range wantIDs {
+		if all[i].Key.ID != want {
+			t.Fatalf("msgs[%d].Key.ID = %q, want %q", i, all[i].Key.ID, want)
+		}
+	}
+	if got.loadingOlder[chatID] {
+		t.Fatalf("loadingOlder should be cleared after response")
+	}
+	if got.noMoreOlder[chatID] {
+		t.Fatalf("noMoreOlder should NOT be set when hasMore=true")
+	}
+}
+
+func TestOlderMsgsMsgMarksExhaustedWhenHasMoreFalse(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m1", 100)}},
+		loadingOlder: map[string]bool{chatID: true},
+		noMoreOlder:  map[string]bool{},
+	}
+	next, _ := model.Update(olderMsgsMsg{chatID: chatID, msgs: nil, hasMore: false})
+	got := next.(m)
+	if !got.noMoreOlder[chatID] {
+		t.Fatalf("noMoreOlder should be true when hasMore=false")
+	}
+	if got.loadingOlder[chatID] {
+		t.Fatalf("loadingOlder should be cleared")
+	}
+}
+
+func TestMaybeLoadOlderSkipsWhenAlreadyLoading(t *testing.T) {
+	chatID := "c1"
+	model := &m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m1", 100)}},
+		loadingOlder: map[string]bool{chatID: true},
+		noMoreOlder:  map[string]bool{},
+		scroll:       100,
+	}
+	if cmd := model.maybeLoadOlder(); cmd != nil {
+		t.Fatalf("maybeLoadOlder should return nil while a fetch is in flight")
+	}
+}
+
+func TestMaybeLoadOlderSkipsWhenExhausted(t *testing.T) {
+	chatID := "c1"
+	model := &m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m1", 100)}},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{chatID: true},
+		scroll:       100,
+	}
+	if cmd := model.maybeLoadOlder(); cmd != nil {
+		t.Fatalf("maybeLoadOlder should return nil when noMoreOlder is set")
+	}
+}
+
+func TestMaybeLoadOlderSkipsWhenFarFromTop(t *testing.T) {
+	chatID := "c1"
+	msgs := make([]wireMsg, 100)
+	for i := range msgs {
+		msgs[i] = mkMsg(fmt.Sprintf("m%d", i), int64(i+1))
+	}
+	model := &m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: msgs},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+		scroll:       0,
+	}
+	if cmd := model.maybeLoadOlder(); cmd != nil {
+		t.Fatalf("maybeLoadOlder should return nil when user is at the bottom")
+	}
+}
+
+func TestMaybeLoadOlderTriggersWhenNearTop(t *testing.T) {
+	chatID := "c1"
+	msgs := make([]wireMsg, 50)
+	for i := range msgs {
+		msgs[i] = mkMsg(fmt.Sprintf("m%d", i), int64(i+1))
+	}
+	model := &m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{chatID: msgs},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+		scroll:       45,
+	}
+	cmd := model.maybeLoadOlder()
+	if cmd == nil {
+		t.Fatalf("maybeLoadOlder should return a fetch cmd when near top")
+	}
+	if !model.loadingOlder[chatID] {
+		t.Fatalf("loadingOlder[%s] should be true after triggering", chatID)
+	}
+}
+
+func TestMsgsMsgMarksExhaustedWhenHasMoreFalse(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+	}
+	next, _ := model.Update(msgsMsg{chatID: chatID, msgs: []wireMsg{mkMsg("m1", 1)}, hasMore: false})
+	got := next.(m)
+	if !got.noMoreOlder[chatID] {
+		t.Fatalf("noMoreOlder should be true when hasMore=false")
+	}
+}
+
+func TestMsgsMsgKeepsHasMoreOpenWhenBackendSaysSo(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{chatID: true}, // stale flag from a prior fetch
+	}
+	next, _ := model.Update(msgsMsg{chatID: chatID, msgs: []wireMsg{mkMsg("m1", 1)}, hasMore: true})
+	got := next.(m)
+	if got.noMoreOlder[chatID] {
+		t.Fatalf("noMoreOlder should be cleared when hasMore=true")
+	}
+}
+
+// --- Message-search tests ---
+
+func TestCtrlFEntersMsgsearchMode(t *testing.T) {
+	model := m{status: "ready", mode: "chat", active: "c1", whitelist: map[string]string{}}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyCtrlF})
+	got := next.(m)
+	if got.mode != "msgsearch" {
+		t.Fatalf("mode = %q, want msgsearch", got.mode)
+	}
+}
+
+func TestMsgsearchEscReturnsToChat(t *testing.T) {
+	model := m{status: "ready", mode: "msgsearch", active: "c1", whitelist: map[string]string{}, msgSearchInput: "foo"}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(m)
+	if got.mode != "chat" {
+		t.Fatalf("mode = %q, want chat", got.mode)
+	}
+	if got.msgSearchInput != "" {
+		t.Fatalf("msgSearchInput should be cleared")
+	}
+}
+
+func TestMsgsearchEscReturnsToNavWhenNoActiveChat(t *testing.T) {
+	model := m{status: "ready", mode: "msgsearch", active: "", whitelist: map[string]string{}}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEsc})
+	if next.(m).mode != "nav" {
+		t.Fatalf("mode = %q, want nav", next.(m).mode)
+	}
+}
+
+func TestMsgsearchTypingAppendsToInput(t *testing.T) {
+	model := m{status: "ready", mode: "msgsearch", whitelist: map[string]string{}}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hi")})
+	if next.(m).msgSearchInput != "hi" {
+		t.Fatalf("msgSearchInput = %q, want hi", next.(m).msgSearchInput)
+	}
+}
+
+func TestMsgsearchBackspaceClearsLastChar(t *testing.T) {
+	model := m{status: "ready", mode: "msgsearch", msgSearchInput: "abc", whitelist: map[string]string{}}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyBackspace})
+	if next.(m).msgSearchInput != "ab" {
+		t.Fatalf("msgSearchInput = %q, want ab", next.(m).msgSearchInput)
+	}
+}
+
+func TestMsgsearchEnterWithResultsJumpsToChat(t *testing.T) {
+	hits := []searchHit{
+		{ChatID: "c1", MessageID: "m1", Timestamp: 100, Snippet: "hello <b>foo</b>"},
+		{ChatID: "c2", MessageID: "m2", Timestamp: 200, Snippet: "<b>foo</b> world"},
+	}
+	model := m{
+		status:           "ready",
+		mode:             "msgsearch",
+		whitelist:        map[string]string{},
+		msgSearchInput:   "foo",
+		msgSearchResults: hits,
+		msgSearchSel:     1,
+	}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(m)
+	if got.mode != "chat" {
+		t.Fatalf("mode = %q, want chat", got.mode)
+	}
+	if got.active != "c2" {
+		t.Fatalf("active = %q, want c2", got.active)
+	}
+	if got.selectedMsgID != "m2" {
+		t.Fatalf("selectedMsgID = %q, want m2", got.selectedMsgID)
+	}
+	if len(got.msgSearchResults) != 0 {
+		t.Fatalf("msgSearchResults should be cleared after jump")
+	}
+}
+
+func TestMsgsearchUpDownNavigatesResults(t *testing.T) {
+	hits := []searchHit{
+		{ChatID: "c1", MessageID: "m1"},
+		{ChatID: "c2", MessageID: "m2"},
+		{ChatID: "c3", MessageID: "m3"},
+	}
+	model := m{
+		status:           "ready",
+		mode:             "msgsearch",
+		whitelist:        map[string]string{},
+		msgSearchResults: hits,
+		msgSearchSel:     0,
+	}
+	next, _ := model.key(tea.KeyMsg{Type: tea.KeyDown})
+	if next.(m).msgSearchSel != 1 {
+		t.Fatalf("after Down: sel = %d, want 1", next.(m).msgSearchSel)
+	}
+	model = next.(m)
+	next, _ = model.key(tea.KeyMsg{Type: tea.KeyUp})
+	if next.(m).msgSearchSel != 0 {
+		t.Fatalf("after Up: sel = %d, want 0", next.(m).msgSearchSel)
+	}
+}
+
+func TestSearchResultsMsgPopulatesResults(t *testing.T) {
+	model := m{status: "ready", mode: "msgsearch", whitelist: map[string]string{}, msgSearchLoading: true}
+	hits := []searchHit{{ChatID: "c1", MessageID: "m1", Snippet: "hi"}}
+	next, _ := model.Update(searchResultsMsg{query: "hi", results: hits})
+	got := next.(m)
+	if got.msgSearchLoading {
+		t.Fatalf("loading should be cleared")
+	}
+	if len(got.msgSearchResults) != 1 {
+		t.Fatalf("results count = %d, want 1", len(got.msgSearchResults))
+	}
+}

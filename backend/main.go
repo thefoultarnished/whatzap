@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,9 +117,8 @@ type App struct {
 	started        bool
 	connected      bool
 
-	cacheDir  string
-	cachePath string
-	state     PersistedState
+	cacheDir string
+	state    PersistedState
 
 	apiToken string
 
@@ -275,10 +273,8 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	cachePath := filepath.Join(cacheDir, "state.json")
 	app := &App{
 		cacheDir:  cacheDir,
-		cachePath: cachePath,
 		apiToken:  apiToken,
 		wsClients: map[*websocket.Conn]*wsClient{},
 		state: PersistedState{
@@ -296,17 +292,12 @@ func NewApp() (*App, error) {
 func (a *App) initPersistentResources() error {
 	cacheDir := strings.TrimSpace(a.cacheDir)
 	if cacheDir == "" {
-		if a.cachePath != "" {
-			cacheDir = filepath.Dir(a.cachePath)
-		} else {
-			return fmt.Errorf("cache directory is not configured")
-		}
+		return fmt.Errorf("cache directory is not configured")
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return err
 	}
 	a.cacheDir = cacheDir
-	a.cachePath = filepath.Join(cacheDir, "state.json")
 
 	dbPath := filepath.Join(cacheDir, "store.db")
 	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", waLog.Stdout("db", "WARN", true))
@@ -365,6 +356,18 @@ func (a *App) initPersistentResources() error {
 		_ = rawDB.Close()
 		return err
 	}
+	if _, err := rawDB.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+			chat_id UNINDEXED,
+			msg_id  UNINDEXED,
+			from_me UNINDEXED,
+			body,
+			tokenize = 'porter unicode61'
+		);
+	`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
 
 	a.db = rawDB
 	a.storeContainer = container
@@ -386,12 +389,6 @@ func (a *App) resetPersistentStorage() error {
 			return err
 		}
 		return a.initPersistentResources()
-	}
-
-	if strings.TrimSpace(a.cachePath) != "" {
-		if err := os.Remove(a.cachePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
 	}
 	return nil
 }
@@ -419,6 +416,7 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("/typing", a.handleTyping)
 	mux.HandleFunc("/messages/react", a.handleReact)
 	mux.HandleFunc("/messages/delete", a.handleDeleteMessage)
+	mux.HandleFunc("/search", a.handleSearch)
 	return withCORS(a.withAuth(mux))
 }
 
@@ -690,6 +688,68 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 	}
 }
 
+// extractSearchableText pulls user-visible text from a WireMessage payload
+// for full-text indexing. Returns empty string for messages with no text content
+// (stickers, reactions, audio without caption, etc).
+func extractSearchableText(msg map[string]any) string {
+	if msg == nil {
+		return ""
+	}
+	var b strings.Builder
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s)
+	}
+	if s, ok := msg["conversation"].(string); ok {
+		add(s)
+	}
+	if ext, ok := msg["extendedTextMessage"].(map[string]any); ok {
+		if s, ok := ext["text"].(string); ok {
+			add(s)
+		}
+		if s, ok := ext["quotedText"].(string); ok {
+			add(s)
+		}
+	}
+	for _, kind := range []string{"imageMessage", "videoMessage", "documentMessage"} {
+		media, ok := msg[kind].(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := media["caption"].(string); ok {
+			add(s)
+		}
+		if kind == "documentMessage" {
+			if s, ok := media["fileName"].(string); ok {
+				add(s)
+			}
+		}
+	}
+	return b.String()
+}
+
+func (a *App) upsertMessageFTS(chatID, msgID string, fromMe int, body string) {
+	if a.db == nil {
+		return
+	}
+	if _, err := a.db.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ? AND from_me = ?`, chatID, msgID, fromMe); err != nil {
+		log.Printf("upsertMessageFTS delete: %v", err)
+		return
+	}
+	if body == "" {
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, chatID, msgID, fromMe, body); err != nil {
+		log.Printf("upsertMessageFTS insert: %v", err)
+	}
+}
+
 func (a *App) insertMessageToDB(chatID string, msg WireMessage) error {
 	id := msg.Key.ID
 	if id == "" {
@@ -703,11 +763,14 @@ func (a *App) insertMessageToDB(chatID string, msg WireMessage) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(`
+	if _, err := a.db.Exec(`
 		INSERT OR REPLACE INTO messages (id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, chatID, fromMe, msg.Key.Participant, msg.MessageTimestamp, msg.PushName, msg.ReceiptStatus, string(msgJSON), msg.MediaProto)
-	return err
+	`, id, chatID, fromMe, msg.Key.Participant, msg.MessageTimestamp, msg.PushName, msg.ReceiptStatus, string(msgJSON), msg.MediaProto); err != nil {
+		return err
+	}
+	a.upsertMessageFTS(chatID, id, fromMe, extractSearchableText(msg.Message))
+	return nil
 }
 
 func scanMessageRow(rows *sql.Rows) (WireMessage, error) {
@@ -1493,15 +1556,17 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	const q = `SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
 		FROM messages WHERE chat_id = ? %s ORDER BY ts DESC LIMIT ?`
+	// Fetch limit+1 so we can detect whether more older messages exist.
+	fetch := limit + 1
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if beforeStr := strings.TrimSpace(r.URL.Query().Get("before")); beforeStr != "" {
 		beforeTS, _ := strconv.ParseInt(beforeStr, 10, 64)
-		rows, err = a.db.Query(fmt.Sprintf(q, "AND ts < ?"), chatID, beforeTS, limit)
+		rows, err = a.db.Query(fmt.Sprintf(q, "AND ts < ?"), chatID, beforeTS, fetch)
 	} else {
-		rows, err = a.db.Query(fmt.Sprintf(q, ""), chatID, limit)
+		rows, err = a.db.Query(fmt.Sprintf(q, ""), chatID, fetch)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -1509,7 +1574,7 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	msgs := make([]WireMessage, 0, limit)
+	msgs := make([]WireMessage, 0, fetch)
 	for rows.Next() {
 		msg, err := scanMessageRow(rows)
 		if err != nil {
@@ -1517,11 +1582,95 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		msgs = append(msgs, msg)
 	}
+	hasMore := len(msgs) > limit
+	if hasMore {
+		msgs = msgs[:limit]
+	}
 	// Results came DESC; reverse to chronological order for the TUI.
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "hasMore": hasMore})
+}
+
+type searchHit struct {
+	ChatID    string `json:"chatId"`
+	MessageID string `json:"messageId"`
+	FromMe    bool   `json:"fromMe"`
+	Timestamp int64  `json:"timestamp"`
+	Snippet   string `json:"snippet"`
+}
+
+func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeErr(w, http.StatusBadRequest, "q is required")
+		return
+	}
+	limit := 50
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = min(n, 200)
+	}
+	chatID := strings.TrimSpace(r.URL.Query().Get("chatId"))
+	if chatID != "" {
+		chatID = a.canonicalizeChatID(chatID)
+	}
+
+	// Wrap each token in double quotes so FTS5 treats them as phrase tokens (avoids
+	// users hitting FTS5 special syntax accidentally; multi-word still ANDs).
+	tokens := strings.Fields(q)
+	if len(tokens) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"results": []searchHit{}})
+		return
+	}
+	for i, t := range tokens {
+		tokens[i] = `"` + strings.ReplaceAll(t, `"`, `""`) + `"`
+	}
+	matchExpr := strings.Join(tokens, " ")
+
+	const baseQ = `
+		SELECT f.chat_id, f.msg_id, f.from_me,
+		       snippet(messages_fts, 3, '<b>', '</b>', '...', 12) AS snip,
+		       COALESCE(m.ts, 0) AS ts
+		FROM messages_fts f
+		LEFT JOIN messages m ON m.chat_id = f.chat_id AND m.id = f.msg_id AND m.from_me = f.from_me
+		WHERE f.body MATCH ? %s
+		ORDER BY ts DESC
+		LIMIT ?`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if chatID != "" {
+		rows, err = a.db.Query(fmt.Sprintf(baseQ, "AND f.chat_id = ?"), matchExpr, chatID, limit)
+	} else {
+		rows, err = a.db.Query(fmt.Sprintf(baseQ, ""), matchExpr, limit)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	results := make([]searchHit, 0, limit)
+	for rows.Next() {
+		var (
+			cID, mID, snip string
+			fromMeStr      string
+			ts             int64
+		)
+		if err := rows.Scan(&cID, &mID, &fromMeStr, &snip, &ts); err != nil {
+			continue
+		}
+		results = append(results, searchHit{
+			ChatID:    cID,
+			MessageID: mID,
+			FromMe:    fromMeStr == "1",
+			Timestamp: ts,
+			Snippet:   snip,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (a *App) requireConnectedClient(w http.ResponseWriter) bool {
@@ -1896,6 +2045,7 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Remove from DB
 	_, _ = a.db.Exec(`DELETE FROM messages WHERE chat_id = ? AND id = ?`, req.ChatID, req.MessageID)
+	_, _ = a.db.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ?`, req.ChatID, req.MessageID)
 	a.persistState()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1986,7 +2136,6 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
 				return
 			}
-			a.cachePath = filepath.Join(a.cacheDir, "state.json")
 		}
 		if err := a.persistStateWithErr(); err != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("state cleanup failed: %v", err))
@@ -2264,102 +2413,129 @@ func dedupeKey(m WireMessage) string {
 	return m.Key.RemoteJID + "|" + m.Key.Participant + "|" + fromMe + "|" + strconv.FormatInt(m.MessageTimestamp, 10) + "|" + body
 }
 
-func (a *App) loadState() {
-	// Primary source: SQLite chats + contacts tables.
-	if a.db != nil {
-		chats, err1 := a.loadChatsFromDB()
-		contacts, err2 := a.loadContactsFromDB()
-		if err1 == nil && err2 == nil && (len(chats) > 0 || len(contacts) > 0) {
-			a.mu.Lock()
-			a.state.Chats = chats
-			a.state.Contacts = contacts
-			a.needsBootstrapSync = false
-			a.mu.Unlock()
-			a.reconcileChatTimestampsFromDB()
-			return
-		}
-	}
-
-	// DB is empty — try one-time migration from legacy state.json.
-	if a.cachePath == "" {
-		a.mu.Lock()
-		a.needsBootstrapSync = true
-		a.mu.Unlock()
+// backfillFTS populates the messages_fts index from the messages table on
+// first run after the FTS feature was added. No-op if FTS already has rows or
+// if there are no messages.
+func (a *App) backfillFTS() {
+	if a.db == nil {
 		return
 	}
-	raw, err := os.ReadFile(a.cachePath)
+	var ftsCount, msgCount int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM messages_fts`).Scan(&ftsCount); err != nil {
+		log.Printf("backfillFTS count fts: %v", err)
+		return
+	}
+	if ftsCount > 0 {
+		return
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgCount); err != nil || msgCount == 0 {
+		return
+	}
+	rows, err := a.db.Query(`SELECT id, chat_id, from_me, message_json FROM messages`)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			a.mu.Lock()
-			a.needsBootstrapSync = true
-			a.mu.Unlock()
-			return
-		}
-		log.Printf("state read error: %v", err)
+		log.Printf("backfillFTS scan: %v", err)
 		return
 	}
-	if strings.TrimSpace(string(raw)) == "" {
+	type ftsRow struct {
+		chatID, msgID, body string
+		fromMe              int
+	}
+	// Drain all rows first so the SELECT cursor is closed before we start writing.
+	// Mixing Query + Exec on a tightly-pooled DB can deadlock otherwise.
+	var pending []ftsRow
+	for rows.Next() {
+		var id, chatID, msgJSON string
+		var fromMe int
+		if err := rows.Scan(&id, &chatID, &fromMe, &msgJSON); err != nil {
+			continue
+		}
+		var m map[string]any
+		_ = json.Unmarshal([]byte(msgJSON), &m)
+		body := extractSearchableText(m)
+		if body == "" {
+			continue
+		}
+		pending = append(pending, ftsRow{chatID: chatID, msgID: id, fromMe: fromMe, body: body})
+	}
+	_ = rows.Close()
+
+	indexed := 0
+	for _, r := range pending {
+		if _, err := a.db.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, r.chatID, r.msgID, r.fromMe, r.body); err != nil {
+			continue
+		}
+		indexed++
+	}
+	if indexed > 0 {
+		log.Printf("backfillFTS: indexed %d messages", indexed)
+	}
+}
+
+// purgeContactsWithName clears chat_permissions.name rows that match the given
+// name. Returns the number of rows affected.
+func (a *App) purgeContactsWithName(name string) (int64, error) {
+	if a.db == nil {
+		return 0, nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, nil
+	}
+	res, err := a.db.Exec(`UPDATE chat_permissions SET name = '' WHERE name = ?`, name)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// purgeOwnPushNameFromContacts clears chat_permissions.name rows that match
+// the local user's own WhatsApp push name. Legacy bug: outgoing messages used
+// to write the sender's push name (i.e. our own) into the recipient's contact
+// row via INSERT OR IGNORE, so once-bad rows persisted forever. Run once per
+// startup as a defensive sweep.
+func (a *App) purgeOwnPushNameFromContacts() {
+	if a.client == nil || a.client.Store == nil {
+		return
+	}
+	pushName := a.client.Store.PushName
+	n, err := a.purgeContactsWithName(pushName)
+	if err != nil {
+		log.Printf("purgeOwnPushNameFromContacts: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("purgeOwnPushNameFromContacts: cleared %d row(s) where name = %q", n, strings.TrimSpace(pushName))
+	}
+}
+
+func (a *App) loadState() {
+	// One-time backfill: index all messages into FTS if it's empty but messages exist.
+	a.backfillFTS()
+	// Defensive: clear any chat_permissions rows that have the local user's own
+	// push name as the contact name (legacy bug — see purgeOwnPushNameFromContacts).
+	a.purgeOwnPushNameFromContacts()
+
+	// Primary source: SQLite chats + contacts tables.
+	if a.db == nil {
 		a.mu.Lock()
 		a.needsBootstrapSync = true
 		a.mu.Unlock()
 		return
 	}
-	var legacy struct {
-		Chats    map[string]Chat          `json:"chats"`
-		Contacts map[string]Contact       `json:"contacts"`
-		Messages map[string][]WireMessage `json:"messages"`
+	chats, err1 := a.loadChatsFromDB()
+	contacts, err2 := a.loadContactsFromDB()
+	if err1 != nil || err2 != nil {
+		log.Printf("loadState: %v %v", err1, err2)
 	}
-	if err := json.Unmarshal(raw, &legacy); err != nil {
-		log.Printf("state parse error: %v", err)
-		a.mu.Lock()
-		a.state = PersistedState{Chats: map[string]Chat{}, Contacts: map[string]Contact{}}
-		a.needsBootstrapSync = true
-		a.mu.Unlock()
-		if removeErr := os.Remove(a.cachePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			log.Printf("state cleanup error: %v", removeErr)
-		}
-		return
-	}
-	if legacy.Chats == nil {
-		legacy.Chats = map[string]Chat{}
-	}
-	if legacy.Contacts == nil {
-		legacy.Contacts = map[string]Contact{}
-	}
-
-	// Migrate messages from old JSON.
-	for rawChatID, msgs := range legacy.Messages {
-		chatID := a.canonicalizeChatID(rawChatID)
-		for _, msg := range msgs {
-			msg.Key.RemoteJID = a.canonicalizeChatID(msg.Key.RemoteJID)
-			if msg.Key.Participant != "" {
-				msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
-			}
-			_ = a.insertMessageToDB(chatID, msg)
-		}
-	}
-	if len(legacy.Messages) > 0 {
-		log.Printf("loadState: migrated %d chats of messages from JSON to SQLite", len(legacy.Messages))
-	}
-
-	state := PersistedState{Chats: legacy.Chats, Contacts: legacy.Contacts}
-	a.migrateStateCanonicalIDs(&state)
-
-	// Migrate chats/contacts to DB and delete the JSON file.
-	for _, chat := range state.Chats {
-		_ = a.upsertChatToDB(chat)
-	}
-	for _, contact := range state.Contacts {
-		_ = a.upsertContactToDB(contact)
-	}
-	if len(state.Chats) > 0 || len(state.Contacts) > 0 {
-		log.Printf("loadState: migrated chats/contacts from state.json to SQLite")
-	}
-	_ = os.Remove(a.cachePath)
-
 	a.mu.Lock()
-	a.state = state
-	a.needsBootstrapSync = len(state.Chats) == 0
+	if chats != nil {
+		a.state.Chats = chats
+	}
+	if contacts != nil {
+		a.state.Contacts = contacts
+	}
+	a.needsBootstrapSync = len(a.state.Chats) == 0
 	a.mu.Unlock()
 	a.reconcileChatTimestampsFromDB()
 }
@@ -2493,57 +2669,6 @@ func (a *App) persistStateWithErr() error {
 	return nil
 }
 
-// Atomic write for persisted state files.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpPath, perm); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		if runtime.GOOS != "windows" {
-			return err
-		}
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return removeErr
-		}
-		if err := os.Rename(tmpPath, path); err != nil {
-			return err
-		}
-	}
-	if runtime.GOOS != "windows" {
-		if dirHandle, err := os.Open(dir); err == nil {
-			_ = dirHandle.Sync()
-			_ = dirHandle.Close()
-		}
-	}
-	return nil
-}
 
 // reconcileChatTimestampsFromDB queries the DB for the max message timestamp per
 // chat and bumps a.state.Chats entries that are behind.

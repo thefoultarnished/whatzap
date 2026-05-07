@@ -70,6 +70,17 @@ func newTestApp(t *testing.T) *App {
 	`); err != nil {
 		t.Fatalf("create chats/contacts tables: %v", err)
 	}
+	if _, err := db.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+			chat_id UNINDEXED,
+			msg_id  UNINDEXED,
+			from_me UNINDEXED,
+			body,
+			tokenize = 'porter unicode61'
+		);
+	`); err != nil {
+		t.Fatalf("create messages_fts: %v", err)
+	}
 
 	app := &App{
 		db:        db,
@@ -528,106 +539,6 @@ func TestPersistStateWithErr(t *testing.T) {
 	_ = app.db.QueryRow(`SELECT id FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&msgID)
 	if msgID != "m1" {
 		t.Fatalf("message id in DB = %q, want m1", msgID)
-	}
-}
-
-// Atomic write check.
-func TestWriteFileAtomicReplacesFileAndCleansTemp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
-		t.Fatalf("seed file failed: %v", err)
-	}
-
-	if err := writeFileAtomic(path, []byte("new"), 0o644); err != nil {
-		t.Fatalf("writeFileAtomic failed: %v", err)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read target file failed: %v", err)
-	}
-	if string(raw) != "new" {
-		t.Fatalf("file contents = %q, want new", string(raw))
-	}
-
-	matches, err := filepath.Glob(filepath.Join(dir, "state.json.tmp-*"))
-	if err != nil {
-		t.Fatalf("glob temp files failed: %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("expected no temp files, found %d", len(matches))
-	}
-}
-
-// Load check.
-func TestLoadStateInitializesMapsAndReconcilesTimestamps(t *testing.T) {
-	app := newTestApp(t)
-	f, err := os.CreateTemp("", "whatzap-state-*.json")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	app.cachePath = f.Name()
-	_ = f.Close()
-	t.Cleanup(func() { os.Remove(app.cachePath) })
-
-	state := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex"}},"messages":{"15551230001":[{"key":{"remoteJid":"15551230001","fromMe":false},"message":{"conversation":"hello"},"messageTimestamp":77}]}}`
-	if err := os.WriteFile(app.cachePath, []byte(state), 0o644); err != nil {
-		t.Fatalf("write state file failed: %v", err)
-	}
-
-	app.loadState()
-
-	if app.needsBootstrapSync {
-		t.Fatalf("expected loadState to avoid bootstrap mode")
-	}
-	if app.state.Contacts == nil {
-		t.Fatalf("contacts map was not initialized")
-	}
-	chat, ok := app.state.Chats["15551230001@s.whatsapp.net"]
-	if !ok {
-		t.Fatalf("canonical chat id was not loaded")
-	}
-	if chat.ConversationTimestamp != 77 {
-		t.Fatalf("chat timestamp = %d, want 77", chat.ConversationTimestamp)
-	}
-	// Messages are migrated into SQLite during loadState.
-	var count int
-	_ = app.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&count)
-	if count != 1 {
-		t.Fatalf("migrated message count = %d, want 1", count)
-	}
-	var remoteJID string
-	_ = app.db.QueryRow(`SELECT chat_id FROM messages WHERE chat_id = '15551230001@s.whatsapp.net'`).Scan(&remoteJID)
-	if remoteJID != "15551230001@s.whatsapp.net" {
-		t.Fatalf("chat_id = %q, want canonical jid", remoteJID)
-	}
-}
-
-func TestLoadStateCorruptionFallsBackToBootstrap(t *testing.T) {
-	app := newTestApp(t)
-	f, err := os.CreateTemp("", "whatzap-corrupt-*.json")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	app.cachePath = f.Name()
-	_ = f.Close()
-
-	app.state.Chats["stale"] = Chat{ID: "stale"}
-	if err := os.WriteFile(app.cachePath, []byte("{not-json"), 0o644); err != nil {
-		t.Fatalf("write corrupt state file failed: %v", err)
-	}
-
-	app.loadState()
-
-	if !app.needsBootstrapSync {
-		t.Fatalf("expected bootstrap mode after corrupt state")
-	}
-	if len(app.state.Chats) != 0 || len(app.state.Contacts) != 0 {
-		t.Fatalf("expected in-memory state reset after corrupt state")
-	}
-	if _, err := os.Stat(app.cachePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected corrupt cache file to be removed, got err=%v", err)
 	}
 }
 
@@ -1248,10 +1159,11 @@ func TestUpsertMessageDuringHistorySyncWritesToDBButSkipsJSON(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected message in DB during history sync, got count=%d", count)
 	}
-	// JSON state file must NOT have been written.
-	raw, _ := os.ReadFile(app.cachePath)
-	if len(raw) != 0 {
-		t.Fatalf("JSON file was written during history sync: %q", string(raw))
+	// Chats table must NOT have a row for this chat yet (persistState was skipped).
+	var chatCount int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatCount)
+	if chatCount != 0 {
+		t.Fatalf("chat was persisted to DB during history sync")
 	}
 }
 
@@ -1276,51 +1188,433 @@ func TestDeleteMessageRemovesFromDB(t *testing.T) {
 	}
 }
 
-func TestJSONMigrationMovesEverythingToSQLite(t *testing.T) {
-	app := newTestApp(t)
-	f, err := os.CreateTemp("", "whatzap-migrate-*.json")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	app.cachePath = f.Name()
-	_ = f.Close()
+// --- Full-text search tests ---
 
-	old := `{"chats":{"15551230001":{"id":"15551230001","name":"Alex","conversationTimestamp":42}},"contacts":{"15551230001":{"id":"15551230001","notify":"Alex"}},"messages":{"15551230001":[{"key":{"id":"migrated1","remoteJid":"15551230001","fromMe":false},"message":{"conversation":"migrated"},"messageTimestamp":42}]}}`
-	if err := os.WriteFile(app.cachePath, []byte(old), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+func searchHits(t *testing.T, app *App, query, chatID string) []searchHit {
+	t.Helper()
+	url := "/search?q=" + query
+	if chatID != "" {
+		url += "&chatId=" + chatID
 	}
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, url, nil), app)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Results []searchHit `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	return body.Results
+}
+
+func TestExtractSearchableText(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  map[string]any
+		want string
+	}{
+		{"plain", map[string]any{"conversation": "hello world"}, "hello world"},
+		{"extended", map[string]any{"extendedTextMessage": map[string]any{"text": "extended body"}}, "extended body"},
+		{"image_caption", map[string]any{"imageMessage": map[string]any{"caption": "look at this"}}, "look at this"},
+		{"document_filename", map[string]any{"documentMessage": map[string]any{"caption": "here", "fileName": "report.pdf"}}, "here report.pdf"},
+		{"sticker_no_text", map[string]any{"stickerMessage": map[string]any{"mimetype": "image/webp"}}, ""},
+		{"empty", map[string]any{}, ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractSearchableText(tc.msg); got != tc.want {
+				t.Fatalf("extractSearchableText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchFindsInsertedMessage(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "15551230001@s.whatsapp.net"
+	if err := app.insertMessageToDB(chatID, WireMessage{
+		Key: WireKey{ID: "m1", RemoteJID: chatID}, MessageTimestamp: 100,
+		Message: map[string]any{"conversation": "the quick brown fox"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := app.insertMessageToDB(chatID, WireMessage{
+		Key: WireKey{ID: "m2", RemoteJID: chatID}, MessageTimestamp: 200,
+		Message: map[string]any{"conversation": "lazy dog jumped over"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	results := searchHits(t, app, "fox", "")
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	if results[0].MessageID != "m1" {
+		t.Fatalf("hit.MessageID = %q, want m1", results[0].MessageID)
+	}
+	if !strings.Contains(results[0].Snippet, "<b>") {
+		t.Fatalf("snippet missing highlight tags: %q", results[0].Snippet)
+	}
+}
+
+func TestSearchMultiWordANDsTokens(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	_ = app.insertMessageToDB(chatID, WireMessage{Key: WireKey{ID: "m1", RemoteJID: chatID}, MessageTimestamp: 1, Message: map[string]any{"conversation": "hello world"}})
+	_ = app.insertMessageToDB(chatID, WireMessage{Key: WireKey{ID: "m2", RemoteJID: chatID}, MessageTimestamp: 2, Message: map[string]any{"conversation": "hello there"}})
+	_ = app.insertMessageToDB(chatID, WireMessage{Key: WireKey{ID: "m3", RemoteJID: chatID}, MessageTimestamp: 3, Message: map[string]any{"conversation": "world peace"}})
+
+	results := searchHits(t, app, "hello+world", "")
+	if len(results) != 1 || results[0].MessageID != "m1" {
+		t.Fatalf("multi-word AND failed: got %+v", results)
+	}
+}
+
+func TestSearchFiltersByChat(t *testing.T) {
+	app := newTestApp(t)
+	chatA, chatB := "a@s.whatsapp.net", "b@s.whatsapp.net"
+	_ = app.insertMessageToDB(chatA, WireMessage{Key: WireKey{ID: "m1", RemoteJID: chatA}, MessageTimestamp: 1, Message: map[string]any{"conversation": "shared text"}})
+	_ = app.insertMessageToDB(chatB, WireMessage{Key: WireKey{ID: "m2", RemoteJID: chatB}, MessageTimestamp: 2, Message: map[string]any{"conversation": "shared text"}})
+
+	results := searchHits(t, app, "shared", chatA)
+	if len(results) != 1 || results[0].ChatID != chatA {
+		t.Fatalf("chat filter failed: got %+v", results)
+	}
+}
+
+func TestSearchExcludesDeletedMessage(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	_ = app.insertMessageToDB(chatID, WireMessage{Key: WireKey{ID: "m1", RemoteJID: chatID}, MessageTimestamp: 1, Message: map[string]any{"conversation": "deletable text"}})
+
+	if got := searchHits(t, app, "deletable", ""); len(got) != 1 {
+		t.Fatalf("pre-delete: results = %d, want 1", len(got))
+	}
+
+	_, _ = app.db.Exec(`DELETE FROM messages WHERE id = 'm1'`)
+	_, _ = app.db.Exec(`DELETE FROM messages_fts WHERE msg_id = 'm1'`)
+
+	if got := searchHits(t, app, "deletable", ""); len(got) != 0 {
+		t.Fatalf("post-delete: results = %d, want 0", len(got))
+	}
+}
+
+func TestSearchMissingQueryReturns400(t *testing.T) {
+	app := newTestApp(t)
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/search", nil), app)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestBackfillFTSIndexesExistingMessages(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	// Bypass insertMessageToDB so FTS isn't populated automatically.
+	_, err := app.db.Exec(`
+		INSERT INTO messages (id, chat_id, from_me, ts, message_json)
+		VALUES (?, ?, 0, 1, ?)
+	`, "m1", chatID, `{"conversation":"backfilled body"}`)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Pre-condition: FTS empty.
+	if got := searchHits(t, app, "backfilled", ""); len(got) != 0 {
+		t.Fatalf("pre-backfill: expected 0 hits, got %d", len(got))
+	}
+
+	app.backfillFTS()
+
+	if got := searchHits(t, app, "backfilled", ""); len(got) != 1 || got[0].MessageID != "m1" {
+		t.Fatalf("post-backfill: hits = %+v, want exactly m1", got)
+	}
+}
+
+// --- Pagination metadata + push-name cleanup tests ---
+
+func TestHandleMessagesReturnsHasMoreTrueWhenMorePagesExist(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	for i := 1; i <= 5; i++ {
+		if err := app.insertMessageToDB(chatID, WireMessage{
+			Key:              WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID},
+			MessageTimestamp: int64(i),
+			Message:          map[string]any{"conversation": "x"},
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&limit=3", nil), app)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+		HasMore  bool          `json:"hasMore"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !body.HasMore {
+		t.Fatalf("hasMore should be true when more older pages exist")
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages count = %d, want 3 (limit, not limit+1)", len(body.Messages))
+	}
+}
+
+func TestHandleMessagesReturnsHasMoreFalseWhenAllReturned(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	for i := 1; i <= 3; i++ {
+		_ = app.insertMessageToDB(chatID, WireMessage{
+			Key: WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID}, MessageTimestamp: int64(i),
+			Message: map[string]any{"conversation": "x"},
+		})
+	}
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&limit=10", nil), app)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+		HasMore  bool          `json:"hasMore"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if body.HasMore {
+		t.Fatalf("hasMore should be false when all messages fit in one page")
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages count = %d, want 3", len(body.Messages))
+	}
+}
+
+func TestHandleMessagesHasMoreExactlyAtLimit(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	// Seed exactly 3 messages, request limit=3. There's NO older page beyond this,
+	// so hasMore must be false. This is the false-positive case the old "len < limit"
+	// heuristic would have got wrong.
+	for i := 1; i <= 3; i++ {
+		_ = app.insertMessageToDB(chatID, WireMessage{
+			Key: WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID}, MessageTimestamp: int64(i),
+			Message: map[string]any{"conversation": "x"},
+		})
+	}
+	req := authorizedRequest(httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&limit=3", nil), app)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+
+	var body struct {
+		Messages []WireMessage `json:"messages"`
+		HasMore  bool          `json:"hasMore"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if body.HasMore {
+		t.Fatalf("hasMore should be false when remaining count == limit")
+	}
+}
+
+func TestPurgeContactsWithNameClearsOnlyMatching(t *testing.T) {
+	app := newTestApp(t)
+	for _, c := range []struct{ phone, name string }{
+		{"111@s.whatsapp.net", "Prabhat"},
+		{"222@s.whatsapp.net", "Prabhat"},
+		{"333@s.whatsapp.net", "Alice"},
+		{"444@s.whatsapp.net", ""},
+	} {
+		if _, err := app.db.Exec(`INSERT INTO chat_permissions (phone, name, allowed) VALUES (?, ?, 0)`, c.phone, c.name); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	n, err := app.purgeContactsWithName("Prabhat")
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("rows affected = %d, want 2", n)
+	}
+
+	var alice, bad1 string
+	_ = app.db.QueryRow(`SELECT name FROM chat_permissions WHERE phone = '333@s.whatsapp.net'`).Scan(&alice)
+	_ = app.db.QueryRow(`SELECT name FROM chat_permissions WHERE phone = '111@s.whatsapp.net'`).Scan(&bad1)
+	if alice != "Alice" {
+		t.Fatalf("Alice was clobbered: got %q", alice)
+	}
+	if bad1 != "" {
+		t.Fatalf("bad row not cleared: got %q", bad1)
+	}
+}
+
+func TestPurgeContactsWithNameEmptyNameIsNoOp(t *testing.T) {
+	app := newTestApp(t)
+	_, _ = app.db.Exec(`INSERT INTO chat_permissions (phone, name, allowed) VALUES ('111@s.whatsapp.net', 'Alice', 1)`)
+	n, err := app.purgeContactsWithName("")
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty name purge should affect 0 rows, got %d", n)
+	}
+	// Whitespace-only also no-op.
+	if n, _ := app.purgeContactsWithName("   "); n != 0 {
+		t.Fatalf("whitespace-only purge should affect 0 rows, got %d", n)
+	}
+	var name string
+	_ = app.db.QueryRow(`SELECT name FROM chat_permissions WHERE phone = '111@s.whatsapp.net'`).Scan(&name)
+	if name != "Alice" {
+		t.Fatalf("untouched contact got modified: %q", name)
+	}
+}
+
+func TestPurgeOwnPushNameFromContactsNoOpWhenClientNil(t *testing.T) {
+	app := newTestApp(t)
+	app.purgeOwnPushNameFromContacts() // must not panic with nil client
+}
+
+// --- DB helper round-trip tests ---
+
+func TestUpsertAndLoadChatsRoundTrip(t *testing.T) {
+	app := newTestApp(t)
+	want := Chat{
+		ID:                    "15551230001@s.whatsapp.net",
+		Name:                  "Alex",
+		Subject:               "Group subject",
+		ConversationTimestamp: 1234567890,
+		UnreadCount:           7,
+	}
+	if err := app.upsertChatToDB(want); err != nil {
+		t.Fatalf("upsertChatToDB: %v", err)
+	}
+	chats, err := app.loadChatsFromDB()
+	if err != nil {
+		t.Fatalf("loadChatsFromDB: %v", err)
+	}
+	got, ok := chats[want.ID]
+	if !ok {
+		t.Fatalf("chat not found in DB")
+	}
+	if got != want {
+		t.Fatalf("round-trip mismatch:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+func TestUpsertChatToDBOverwritesExisting(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	_ = app.upsertChatToDB(Chat{ID: chatID, Name: "old", UnreadCount: 1})
+	_ = app.upsertChatToDB(Chat{ID: chatID, Name: "new", UnreadCount: 99})
+
+	chats, _ := app.loadChatsFromDB()
+	if chats[chatID].Name != "new" || chats[chatID].UnreadCount != 99 {
+		t.Fatalf("overwrite failed: %+v", chats[chatID])
+	}
+	// Only one row in chats table.
+	var count int
+	_ = app.db.QueryRow(`SELECT COUNT(*) FROM chats WHERE id = ?`, chatID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 row, got %d", count)
+	}
+}
+
+func TestUpsertAndLoadContactsRoundTrip(t *testing.T) {
+	app := newTestApp(t)
+	want := Contact{ID: "111@s.whatsapp.net", Name: "Alice", Notify: "Alice Smith"}
+	if err := app.upsertContactToDB(want); err != nil {
+		t.Fatalf("upsertContactToDB: %v", err)
+	}
+	contacts, err := app.loadContactsFromDB()
+	if err != nil {
+		t.Fatalf("loadContactsFromDB: %v", err)
+	}
+	got, ok := contacts[want.ID]
+	if !ok {
+		t.Fatalf("contact not found")
+	}
+	if got != want {
+		t.Fatalf("round-trip mismatch:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+func TestLoadStateFromEmptyDBSetsBootstrap(t *testing.T) {
+	app := newTestApp(t)
+	app.cacheDir = "" // skip cacheDir paths
+	app.loadState()
+	if !app.needsBootstrapSync {
+		t.Fatalf("expected needsBootstrapSync=true on empty DB")
+	}
+}
+
+func TestLoadStateFromPopulatedDB(t *testing.T) {
+	app := newTestApp(t)
+	_ = app.upsertChatToDB(Chat{ID: "c1", Name: "Alex", ConversationTimestamp: 100})
+	_ = app.upsertContactToDB(Contact{ID: "c1", Notify: "Alex"})
 
 	app.loadState()
 
-	// Message migrated with canonical chat ID.
-	var msgChatID string
-	if err := app.db.QueryRow(`SELECT chat_id FROM messages WHERE id = 'migrated1'`).Scan(&msgChatID); err != nil {
-		t.Fatalf("migrated message not found in DB: %v", err)
+	if app.needsBootstrapSync {
+		t.Fatalf("needsBootstrapSync should be false when DB has chats")
 	}
-	if msgChatID != "15551230001@s.whatsapp.net" {
-		t.Fatalf("message chat_id = %q, want canonical form", msgChatID)
+	if app.state.Chats["c1"].Name != "Alex" {
+		t.Fatalf("chat not loaded into state.Chats: %+v", app.state.Chats)
+	}
+	if app.state.Contacts["c1"].Notify != "Alex" {
+		t.Fatalf("contact not loaded into state.Contacts: %+v", app.state.Contacts)
+	}
+}
+
+// --- FTS update behavior ---
+
+func TestFTSReplacesBodyOnReinsert(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	// Insert original.
+	if err := app.insertMessageToDB(chatID, WireMessage{
+		Key: WireKey{ID: "m1", RemoteJID: chatID}, MessageTimestamp: 100,
+		Message: map[string]any{"conversation": "alpha bravo"},
+	}); err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+	if hits := searchHits(t, app, "alpha", ""); len(hits) != 1 {
+		t.Fatalf("first insert: alpha hits = %d, want 1", len(hits))
 	}
 
-	// Chat migrated to chats table.
-	var chatName string
-	if err := app.db.QueryRow(`SELECT name FROM chats WHERE id = '15551230001@s.whatsapp.net'`).Scan(&chatName); err != nil {
-		t.Fatalf("migrated chat not found in DB: %v", err)
+	// Re-insert same ID with completely different body.
+	if err := app.insertMessageToDB(chatID, WireMessage{
+		Key: WireKey{ID: "m1", RemoteJID: chatID}, MessageTimestamp: 100,
+		Message: map[string]any{"conversation": "charlie delta"},
+	}); err != nil {
+		t.Fatalf("insert 2: %v", err)
 	}
-	if chatName != "Alex" {
-		t.Fatalf("chat name = %q, want Alex", chatName)
+	if hits := searchHits(t, app, "alpha", ""); len(hits) != 0 {
+		t.Fatalf("after reinsert: alpha hits = %d, want 0 (FTS should not still match old body)", len(hits))
 	}
+	if hits := searchHits(t, app, "charlie", ""); len(hits) != 1 {
+		t.Fatalf("after reinsert: charlie hits = %d, want 1", len(hits))
+	}
+}
 
-	// Contact migrated to contacts table.
-	var notify string
-	if err := app.db.QueryRow(`SELECT notify FROM contacts WHERE id = '15551230001@s.whatsapp.net'`).Scan(&notify); err != nil {
-		t.Fatalf("migrated contact not found in DB: %v", err)
-	}
-	if notify != "Alex" {
-		t.Fatalf("contact notify = %q, want Alex", notify)
-	}
-
-	// state.json deleted after migration.
-	if _, err := os.Stat(app.cachePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("state.json should be deleted after migration")
+func TestExtractSearchableTextQuotedText(t *testing.T) {
+	got := extractSearchableText(map[string]any{
+		"extendedTextMessage": map[string]any{
+			"text":       "main body",
+			"quotedText": "quoted reference",
+		},
+	})
+	if !strings.Contains(got, "main body") || !strings.Contains(got, "quoted reference") {
+		t.Fatalf("expected both main and quoted text, got %q", got)
 	}
 }

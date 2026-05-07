@@ -38,6 +38,8 @@ func main() {
 			contacts:         map[string]contact{},
 			contactsByNumber: map[string]contact{},
 			msgs:             map[string][]wireMsg{},
+			loadingOlder:     map[string]bool{},
+			noMoreOlder:      map[string]bool{},
 			whitelist:        map[string]string{},
 			names:            map[string]string{},
 			sel:              0,

@@ -292,28 +292,77 @@ func getContacts(c *http.Client, base string) tea.Cmd {
 	}
 }
 func getMsgs(c *http.Client, base, chatID string, limit int) tea.Cmd {
+	return getMsgsBefore(c, base, chatID, limit, 0)
+}
+
+// getMsgsBefore fetches up to `limit` messages older than `before` (unix seconds).
+// Pass before=0 for the initial fetch (returns the most recent messages).
+func getMsgsBefore(c *http.Client, base, chatID string, limit int, before int64) tea.Cmd {
 	return func() tea.Msg {
 		q := url.Values{}
 		q.Set("chatId", chatID)
 		q.Set("limit", strconv.Itoa(limit))
+		if before > 0 {
+			q.Set("before", strconv.FormatInt(before, 10))
+		}
 		u := base + "/messages?" + q.Encode()
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
 		attachAuthHeader(req, apiTokenFromURL(base))
 		res, err := c.Do(req)
 		if err != nil {
+			if before > 0 {
+				return olderMsgsMsg{chatID: chatID, requested: limit, err: err}
+			}
 			return msgsMsg{chatID: chatID, err: err}
 		}
 		defer res.Body.Close()
 		if res.StatusCode/100 != 2 {
-			return msgsMsg{chatID: chatID, err: apiErrorFromResponse(res, "failed to load messages")}
+			apiErr := apiErrorFromResponse(res, "failed to load messages")
+			if before > 0 {
+				return olderMsgsMsg{chatID: chatID, requested: limit, err: apiErr}
+			}
+			return msgsMsg{chatID: chatID, err: apiErr}
 		}
 		var out struct {
 			Messages []wireMsg `json:"messages"`
+			HasMore  bool      `json:"hasMore"`
 		}
 		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			if before > 0 {
+				return olderMsgsMsg{chatID: chatID, requested: limit, err: err}
+			}
 			return msgsMsg{chatID: chatID, err: err}
 		}
-		return msgsMsg{chatID: chatID, msgs: out.Messages}
+		if before > 0 {
+			return olderMsgsMsg{chatID: chatID, requested: limit, msgs: out.Messages, hasMore: out.HasMore}
+		}
+		return msgsMsg{chatID: chatID, msgs: out.Messages, hasMore: out.HasMore}
+	}
+}
+
+func searchMsgs(c *http.Client, base, query string) tea.Cmd {
+	return func() tea.Msg {
+		q := url.Values{}
+		q.Set("q", query)
+		q.Set("limit", "50")
+		u := base + "/search?" + q.Encode()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
+		res, err := c.Do(req)
+		if err != nil {
+			return searchResultsMsg{query: query, err: err}
+		}
+		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return searchResultsMsg{query: query, err: apiErrorFromResponse(res, "search failed")}
+		}
+		var out struct {
+			Results []searchHit `json:"results"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			return searchResultsMsg{query: query, err: err}
+		}
+		return searchResultsMsg{query: query, results: out.Results}
 	}
 }
 

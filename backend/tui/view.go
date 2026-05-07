@@ -203,7 +203,79 @@ func (x m) View() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(muted).
 		Render(inner)
+	if x.mode == "msgsearch" {
+		return x.renderSearchOverlay(frame, outerW, outerH)
+	}
 	return frame
+}
+
+func (x m) renderSearchOverlay(frame string, outerW, outerH int) string {
+	popupW := min(80, max(40, outerW-8))
+	popupH := min(20, max(10, outerH-6))
+
+	prompt := "🔍 "
+	cursor := ""
+	if x.cursorOn {
+		cursor = "▏"
+	}
+	inputLine := prompt + x.msgSearchInput + cursor
+	if x.msgSearchInput == "" {
+		inputLine = prompt + mutedStyle.Render("type query, Enter to search, Esc to cancel") + cursor
+	}
+
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Render(inputLine))
+	lines = append(lines, mutedStyle.Render(strings.Repeat("─", popupW-4)))
+
+	switch {
+	case x.msgSearchLoading:
+		lines = append(lines, mutedStyle.Render("Searching..."))
+	case x.msgSearchErr != "":
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(x.msgSearchErr))
+	case len(x.msgSearchResults) == 0 && strings.TrimSpace(x.msgSearchInput) != "":
+		// User has typed but not pressed Enter yet (or got 0 results after pressing Enter).
+		lines = append(lines, mutedStyle.Render("Press Enter to search."))
+	case len(x.msgSearchResults) == 0:
+		lines = append(lines, mutedStyle.Render("No history yet."))
+	default:
+		maxResults := popupH - 5
+		if maxResults < 1 {
+			maxResults = 1
+		}
+		start := 0
+		if x.msgSearchSel >= maxResults {
+			start = x.msgSearchSel - maxResults + 1
+		}
+		end := min(len(x.msgSearchResults), start+maxResults)
+		for i := start; i < end; i++ {
+			r := x.msgSearchResults[i]
+			chatName := x.nameFor(r.ChatID)
+			snippet := strings.ReplaceAll(r.Snippet, "<b>", "")
+			snippet = strings.ReplaceAll(snippet, "</b>", "")
+			line := chatName + ": " + snippet
+			maxLineW := popupW - 6
+			if len([]rune(line)) > maxLineW {
+				line = string([]rune(line)[:maxLineW-1]) + "…"
+			}
+			if i == x.msgSearchSel {
+				line = lipgloss.NewStyle().Reverse(true).Render(line)
+			}
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, mutedStyle.Render("↑/↓ navigate · Enter open · Esc cancel"))
+
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	popup := lipgloss.NewStyle().
+		Width(popupW).
+		Height(popupH).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(muted).
+		Background(lipgloss.Color(currentTheme.Background)).
+		Render(body)
+	return lipgloss.Place(outerW+2, outerH+2, lipgloss.Center, lipgloss.Center, popup, lipgloss.WithWhitespaceChars(" "))
 }
 
 func (x m) loadingPulse() string {

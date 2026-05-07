@@ -2,6 +2,7 @@
 notes/
 .claude/
 AGENTS.md
+TODO.md
 
 # Build artifacts & binaries
 *.exe
