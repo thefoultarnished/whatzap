@@ -26,7 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	waWeb "go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -300,17 +300,27 @@ func (a *App) initPersistentResources() error {
 	a.cacheDir = cacheDir
 
 	dbPath := filepath.Join(cacheDir, "store.db")
+
+	// Open rawDB first so we can set WAL mode before whatsmeow opens its connection.
+	// WAL is a file-level setting that persists, so whatsmeow's connection inherits it.
+	// This prevents "context deadline exceeded" from write-lock contention.
+	rawDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		return err
+	}
+	if _, err := rawDB.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
+
 	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", waLog.Stdout("db", "WARN", true))
 	if err != nil {
+		_ = rawDB.Close()
 		return err
 	}
 	device, err := container.GetFirstDevice(context.Background())
 	if err != nil {
-		return err
-	}
-
-	rawDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)")
-	if err != nil {
+		_ = rawDB.Close()
 		return err
 	}
 	if _, err := rawDB.Exec(`CREATE TABLE IF NOT EXISTS chat_permissions (
@@ -1326,12 +1336,16 @@ func (a *App) handleSyncContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.client.Store != nil && a.client.Store.AppState != nil {
-		appStateCtx, appStateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		a.safeFetchAppState(appStateCtx, appstate.WAPatchCriticalBlock)
-		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegularLow)
-		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegularHigh)
-		a.safeFetchAppState(appStateCtx, appstate.WAPatchRegular)
-		appStateCancel()
+		for _, patch := range []appstate.WAPatchName{
+			appstate.WAPatchCriticalBlock,
+			appstate.WAPatchRegularLow,
+			appstate.WAPatchRegularHigh,
+			appstate.WAPatchRegular,
+		} {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			a.safeFetchAppState(ctx, patch)
+			cancel()
+		}
 	}
 	if a.client.Store == nil || a.client.Store.Contacts == nil {
 		writeErr(w, http.StatusInternalServerError, "contacts store unavailable")
@@ -1553,6 +1567,10 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
 		limit = min(n, maxMessagesResponseLimit)
 	}
+	if around := strings.TrimSpace(r.URL.Query().Get("around")); around != "" {
+		a.handleMessagesAround(w, chatID, around, limit)
+		return
+	}
 
 	const q = `SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
 		FROM messages WHERE chat_id = ? %s ORDER BY ts DESC LIMIT ?`
@@ -1591,6 +1609,99 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "hasMore": hasMore})
+}
+
+// handleMessagesAround returns a window of messages centred on a specific
+// message ID: up to limit/2 older messages, the anchor itself, and up to
+// limit/2 newer messages. The response includes anchorIndex so the TUI can
+// scroll to position the anchor in view.
+func (a *App) handleMessagesAround(w http.ResponseWriter, chatID, msgID string, limit int) {
+	// Look up the anchor message's timestamp.
+	var anchorTS int64
+	var anchorFromMe int
+	err := a.db.QueryRow(
+		`SELECT ts, from_me FROM messages WHERE chat_id = ? AND id = ? LIMIT 1`,
+		chatID, msgID,
+	).Scan(&anchorTS, &anchorFromMe)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	half := limit / 2
+
+	// Older messages (before anchor, exclusive).
+	olderRows, err := a.db.Query(
+		`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
+		 FROM messages WHERE chat_id = ? AND ts < ?
+		 ORDER BY ts DESC LIMIT ?`,
+		chatID, anchorTS, half,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var older []WireMessage
+	for olderRows.Next() {
+		if msg, err := scanMessageRow(olderRows); err == nil {
+			older = append(older, msg)
+		}
+	}
+	_ = olderRows.Close()
+	// Reverse older (came DESC, want chronological).
+	for i, j := 0, len(older)-1; i < j; i, j = i+1, j-1 {
+		older[i], older[j] = older[j], older[i]
+	}
+
+	// Anchor message itself.
+	anchorRows, err := a.db.Query(
+		`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
+		 FROM messages WHERE chat_id = ? AND id = ? AND from_me = ?`,
+		chatID, msgID, anchorFromMe,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var anchor []WireMessage
+	for anchorRows.Next() {
+		if msg, err := scanMessageRow(anchorRows); err == nil {
+			anchor = append(anchor, msg)
+		}
+	}
+	_ = anchorRows.Close()
+
+	// Newer messages (after anchor, exclusive).
+	newerRows, err := a.db.Query(
+		`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
+		 FROM messages WHERE chat_id = ? AND ts > ?
+		 ORDER BY ts ASC LIMIT ?`,
+		chatID, anchorTS, half,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var newer []WireMessage
+	for newerRows.Next() {
+		if msg, err := scanMessageRow(newerRows); err == nil {
+			newer = append(newer, msg)
+		}
+	}
+	_ = newerRows.Close()
+
+	// Combine: older + anchor + newer (all chronological).
+	msgs := make([]WireMessage, 0, len(older)+len(anchor)+len(newer))
+	msgs = append(msgs, older...)
+	msgs = append(msgs, anchor...)
+	msgs = append(msgs, newer...)
+
+	anchorIndex := len(older) // position of anchor in msgs
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages":    msgs,
+		"anchorIndex": anchorIndex,
+		"hasMore":     false,
+	})
 }
 
 type searchHit struct {
@@ -1714,18 +1825,18 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var msg *waProto.Message
+	var msg *waE2E.Message
 	if req.ReplyToMsgID != "" {
 		// build quoted message stub for ContextInfo
-		quotedMsg := &waProto.Message{Conversation: proto.String(req.ReplyToText)}
+		quotedMsg := &waE2E.Message{Conversation: proto.String(req.ReplyToText)}
 		participant := req.ReplyToParticipant
 		if participant == "" {
 			participant = req.ChatID
 		}
-		msg = &waProto.Message{
-			ExtendedTextMessage: &waProto.ExtendedTextMessage{
+		msg = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 				Text: proto.String(req.Text),
-				ContextInfo: &waProto.ContextInfo{
+				ContextInfo: &waE2E.ContextInfo{
 					StanzaID:      proto.String(req.ReplyToMsgID),
 					Participant:   proto.String(participant),
 					QuotedMessage: quotedMsg,
@@ -1733,7 +1844,7 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 	} else {
-		msg = &waProto.Message{Conversation: proto.String(req.Text)}
+		msg = &waE2E.Message{Conversation: proto.String(req.Text)}
 	}
 
 	resp, err := a.client.SendMessage(context.Background(), jid, msg)
@@ -1923,12 +2034,16 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// actually inform WhatsApp server!
-	chatJID, _ := types.ParseJID(req.ChatID)
-	for senderStr, ids := range senderToIDs {
-		senderJID, _ := types.ParseJID(senderStr)
-		_ = a.client.MarkRead(context.Background(), ids, time.Now(), chatJID, senderJID)
-	}
+	// Inform WhatsApp server in the background so the HTTP response returns
+	// immediately — MarkRead can be slow and would otherwise trigger the TUI's
+	// 12s client timeout.
+	go func() {
+		chatJID, _ := types.ParseJID(req.ChatID)
+		for senderStr, ids := range senderToIDs {
+			senderJID, _ := types.ParseJID(senderStr)
+			_ = a.client.MarkRead(context.Background(), ids, time.Now(), chatJID, senderJID)
+		}
+	}()
 
 	a.persistState()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -2252,7 +2367,7 @@ func quotedFromMeForChat(chatID, quotedParticipant string, isGroup bool) bool {
 	return phoneIdentity(quotedParticipant) != "" && phoneIdentity(quotedParticipant) != phoneIdentity(chatID)
 }
 
-func (a *App) wireMessagePayload(raw, effective *waProto.Message, chatID string, isGroup bool) (map[string]any, string) {
+func (a *App) wireMessagePayload(raw, effective *waE2E.Message, chatID string, isGroup bool) (map[string]any, string) {
 	msg := map[string]any{}
 	var mediaProto string
 	if txt := effective.GetConversation(); txt != "" {
@@ -2317,8 +2432,8 @@ func (a *App) wireMessagePayload(raw, effective *waProto.Message, chatID string,
 	return msg, mediaProto
 }
 
-func protocolMessagePayload(raw, effective *waProto.Message) map[string]any {
-	var protocol *waProto.ProtocolMessage
+func protocolMessagePayload(raw, effective *waE2E.Message) map[string]any {
+	var protocol *waE2E.ProtocolMessage
 	switch {
 	case effective != nil && effective.GetProtocolMessage() != nil:
 		protocol = effective.GetProtocolMessage()
@@ -2346,7 +2461,7 @@ func protocolMessagePayload(raw, effective *waProto.Message) map[string]any {
 	return out
 }
 
-func effectiveMessage(msg *waProto.Message) *waProto.Message {
+func effectiveMessage(msg *waE2E.Message) *waE2E.Message {
 	for msg != nil {
 		switch {
 		case msg.GetDeviceSentMessage() != nil:
@@ -2372,7 +2487,7 @@ func effectiveMessage(msg *waProto.Message) *waProto.Message {
 	return nil
 }
 
-func messageFieldNames(msg *waProto.Message) []string {
+func messageFieldNames(msg *waE2E.Message) []string {
 	if msg == nil {
 		return nil
 	}
@@ -2471,6 +2586,19 @@ func (a *App) backfillFTS() {
 	}
 }
 
+// vacuumDB runs VACUUM asynchronously to compact the database and reclaim space
+// freed by deletions and FTS churn. Runs in a goroutine so startup is not blocked.
+func (a *App) vacuumDB() {
+	if a.db == nil {
+		return
+	}
+	go func() {
+		if _, err := a.db.Exec(`VACUUM`); err != nil {
+			log.Printf("vacuum: %v", err)
+		}
+	}()
+}
+
 // purgeContactsWithName clears chat_permissions.name rows that match the given
 // name. Returns the number of rows affected.
 func (a *App) purgeContactsWithName(name string) (int64, error) {
@@ -2515,6 +2643,8 @@ func (a *App) loadState() {
 	// Defensive: clear any chat_permissions rows that have the local user's own
 	// push name as the contact name (legacy bug — see purgeOwnPushNameFromContacts).
 	a.purgeOwnPushNameFromContacts()
+	// Compact the DB in the background to reclaim space freed by message deletes.
+	a.vacuumDB()
 
 	// Primary source: SQLite chats + contacts tables.
 	if a.db == nil {
@@ -2560,10 +2690,16 @@ func (a *App) bootstrapFromStore() {
 	if a.client.Store.AppState == nil {
 		log.Printf("bootstrap: app state store unavailable, skipping app state sync")
 	} else {
-		a.safeFetchAppState(ctx, appstate.WAPatchCriticalBlock)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegularLow)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegularHigh)
-		a.safeFetchAppState(ctx, appstate.WAPatchRegular)
+		for _, patch := range []appstate.WAPatchName{
+			appstate.WAPatchCriticalBlock,
+			appstate.WAPatchRegularLow,
+			appstate.WAPatchRegularHigh,
+			appstate.WAPatchRegular,
+		} {
+			patchCtx, patchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			a.safeFetchAppState(patchCtx, patch)
+			patchCancel()
+		}
 	}
 
 	if a.client.Store.Contacts == nil {
@@ -3017,7 +3153,7 @@ func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "decode error")
 		return
 	}
-	var msg waProto.Message
+	var msg waE2E.Message
 	if err := proto.Unmarshal(b, &msg); err != nil {
 		writeErr(w, http.StatusInternalServerError, "unmarshal error")
 		return
@@ -3047,7 +3183,7 @@ func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": tmp.Name()})
 }
 
-func mediaExtension(msg *waProto.Message) string {
+func mediaExtension(msg *waE2E.Message) string {
 	msg = effectiveMessage(msg)
 	if msg == nil {
 		return ".bin"
@@ -3150,13 +3286,13 @@ func detectMIMEType(path string, data []byte, fallback string) string {
 	return fallback
 }
 
-func buildOutgoingMediaMessage(kind, path, caption string, upload whatsmeow.UploadResponse, data []byte) (*waProto.Message, map[string]any, error) {
+func buildOutgoingMediaMessage(kind, path, caption string, upload whatsmeow.UploadResponse, data []byte) (*waE2E.Message, map[string]any, error) {
 	mimeType := detectMIMEType(path, data, "application/octet-stream")
 	fileName := filepath.Base(path)
 	switch kind {
 	case "image":
-		msg := &waProto.Message{
-			ImageMessage: &waProto.ImageMessage{
+		msg := &waE2E.Message{
+			ImageMessage: &waE2E.ImageMessage{
 				Caption:       proto.String(caption),
 				Mimetype:      proto.String(mimeType),
 				URL:           proto.String(upload.URL),
@@ -3175,8 +3311,8 @@ func buildOutgoingMediaMessage(kind, path, caption string, upload whatsmeow.Uplo
 			},
 		}, nil
 	case "video":
-		msg := &waProto.Message{
-			VideoMessage: &waProto.VideoMessage{
+		msg := &waE2E.Message{
+			VideoMessage: &waE2E.VideoMessage{
 				Caption:       proto.String(caption),
 				Mimetype:      proto.String(mimeType),
 				URL:           proto.String(upload.URL),
@@ -3195,8 +3331,8 @@ func buildOutgoingMediaMessage(kind, path, caption string, upload whatsmeow.Uplo
 			},
 		}, nil
 	case "document":
-		msg := &waProto.Message{
-			DocumentMessage: &waProto.DocumentMessage{
+		msg := &waE2E.Message{
+			DocumentMessage: &waE2E.DocumentMessage{
 				Caption:       proto.String(caption),
 				Title:         proto.String(fileName),
 				FileName:      proto.String(fileName),
@@ -3221,7 +3357,7 @@ func buildOutgoingMediaMessage(kind, path, caption string, upload whatsmeow.Uplo
 	}
 }
 
-func quotedText(m *waProto.Message) string {
+func quotedText(m *waE2E.Message) string {
 	m = effectiveMessage(m)
 	if m == nil {
 		return ""

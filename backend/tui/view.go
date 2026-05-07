@@ -250,15 +250,13 @@ func (x m) renderSearchOverlay(frame string, outerW, outerH int) string {
 		for i := start; i < end; i++ {
 			r := x.msgSearchResults[i]
 			chatName := x.nameFor(r.ChatID)
-			snippet := strings.ReplaceAll(r.Snippet, "<b>", "")
-			snippet = strings.ReplaceAll(snippet, "</b>", "")
-			line := chatName + ": " + snippet
-			maxLineW := popupW - 6
-			if len([]rune(line)) > maxLineW {
-				line = string([]rune(line)[:maxLineW-1]) + "…"
-			}
+			prefix := chatName + ": "
+			maxLineW := max(10, popupW-6)
+			snippetW := max(4, maxLineW-len([]rune(prefix)))
+			rendered := renderSnippet(r.Snippet, snippetW)
+			line := prefix + rendered
 			if i == x.msgSearchSel {
-				line = lipgloss.NewStyle().Reverse(true).Render(line)
+				line = lipgloss.NewStyle().Reverse(true).Render(prefix + stripSnippetTags(r.Snippet, snippetW))
 			}
 			lines = append(lines, line)
 		}

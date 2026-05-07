@@ -340,6 +340,34 @@ func getMsgsBefore(c *http.Client, base, chatID string, limit int, before int64)
 	}
 }
 
+func getMsgsAround(c *http.Client, base, chatID, msgID string, limit int) tea.Cmd {
+	return func() tea.Msg {
+		q := url.Values{}
+		q.Set("chatId", chatID)
+		q.Set("around", msgID)
+		q.Set("limit", strconv.Itoa(limit))
+		u := base + "/messages?" + q.Encode()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+		attachAuthHeader(req, apiTokenFromURL(base))
+		res, err := c.Do(req)
+		if err != nil {
+			return aroundMsgsMsg{chatID: chatID, err: err}
+		}
+		defer res.Body.Close()
+		if res.StatusCode/100 != 2 {
+			return aroundMsgsMsg{chatID: chatID, err: apiErrorFromResponse(res, "failed to load messages")}
+		}
+		var out struct {
+			Messages    []wireMsg `json:"messages"`
+			AnchorIndex int       `json:"anchorIndex"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			return aroundMsgsMsg{chatID: chatID, err: err}
+		}
+		return aroundMsgsMsg{chatID: chatID, msgs: out.Messages, anchorIndex: out.AnchorIndex}
+	}
+}
+
 func searchMsgs(c *http.Client, base, query string) tea.Cmd {
 	return func() tea.Msg {
 		q := url.Values{}

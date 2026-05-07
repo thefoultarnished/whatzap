@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/gorilla/websocket"
 )
 
 func TestChatInputLockedIgnoresTyping(t *testing.T) {
@@ -1232,5 +1235,288 @@ func TestSearchResultsMsgPopulatesResults(t *testing.T) {
 	}
 	if len(got.msgSearchResults) != 1 {
 		t.Fatalf("results count = %d, want 1", len(got.msgSearchResults))
+	}
+}
+
+// --- Jump to bottom (End key) ---
+
+func TestEndKeyResetsScrollAndReloads(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		whitelist:    map[string]string{},
+		scroll:       50,
+		selectedMsgID: "old",
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m1", 1)}},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+	}
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnd})
+	got := next.(m)
+
+	if got.scroll != 0 {
+		t.Fatalf("scroll = %d, want 0", got.scroll)
+	}
+	if got.selectedMsgID != "" {
+		t.Fatalf("selectedMsgID should be cleared, got %q", got.selectedMsgID)
+	}
+	if cmd == nil {
+		t.Fatalf("End key should fire a getMsgs command")
+	}
+}
+
+func TestEndKeyNoOpInSidebar(t *testing.T) {
+	model := m{
+		status:        "ready",
+		mode:          "chat",
+		active:        "c1",
+		sidebarFocused: true,
+		whitelist:     map[string]string{},
+		scroll:        10,
+	}
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnd})
+	if next.(m).scroll != 10 {
+		t.Fatalf("End key should not affect scroll when sidebar is focused")
+	}
+	if cmd != nil {
+		t.Fatalf("End key should not fire command when sidebar is focused")
+	}
+}
+
+// --- WS reconnect backoff ---
+
+func TestWSReconnectBackoffDoubles(t *testing.T) {
+	model := m{
+		status:           "ready",
+		wsReconnectDelay: time.Second,
+	}
+	next, _ := model.Update(wsOpenMsg{err: fmt.Errorf("refused")})
+	got := next.(m)
+
+	if got.wsReconnectDelay != 2*time.Second {
+		t.Fatalf("wsReconnectDelay = %v, want 2s", got.wsReconnectDelay)
+	}
+	if !got.wsDisconnected {
+		t.Fatalf("wsDisconnected should be true after open failure")
+	}
+}
+
+func TestWSReconnectBackoffCapsAt30s(t *testing.T) {
+	model := m{
+		status:           "ready",
+		wsReconnectDelay: 20 * time.Second,
+	}
+	next, _ := model.Update(wsOpenMsg{err: fmt.Errorf("refused")})
+	got := next.(m)
+	if got.wsReconnectDelay != 30*time.Second {
+		t.Fatalf("wsReconnectDelay = %v, want 30s (cap)", got.wsReconnectDelay)
+	}
+}
+
+func TestWSReconnectResetsOnSuccess(t *testing.T) {
+	conn := &websocket.Conn{}
+	ch := make(chan env)
+	model := m{
+		status:           "ready",
+		wsReconnectDelay: 8 * time.Second,
+		wsDisconnected:   true,
+	}
+	next, _ := model.Update(wsOpenMsg{conn: conn, ch: ch})
+	got := next.(m)
+
+	if got.wsDisconnected {
+		t.Fatalf("wsDisconnected should be cleared on successful open")
+	}
+	if got.wsReconnectDelay != 0 {
+		t.Fatalf("wsReconnectDelay should reset to 0, got %v", got.wsReconnectDelay)
+	}
+}
+
+func TestWSDropSetsDisconnectedAndSchedulesReconnect(t *testing.T) {
+	model := m{
+		status: "ready",
+	}
+	next, cmd := model.Update(wsEvtMsg{ok: false})
+	got := next.(m)
+
+	if !got.wsDisconnected {
+		t.Fatalf("wsDisconnected should be true after channel close")
+	}
+	// First disconnect: delay was 0 → set to 1s → immediately doubled to 2s for next attempt.
+	if got.wsReconnectDelay != 2*time.Second {
+		t.Fatalf("delay after first disconnect = %v, want 2s", got.wsReconnectDelay)
+	}
+	if cmd == nil {
+		t.Fatalf("should schedule reconnect cmd")
+	}
+}
+
+// --- #5 Snippet rendering ---
+
+func TestRenderSnippetBoldsMatchedTerms(t *testing.T) {
+	got := renderSnippet("the <b>quick</b> brown fox", 50)
+	if strings.Contains(got, "<b>") || strings.Contains(got, "</b>") {
+		t.Fatalf("raw tags leaked into rendered output: %q", got)
+	}
+	// Plain text must be present.
+	if !strings.Contains(got, "the") || !strings.Contains(got, "brown fox") {
+		t.Fatalf("plain text missing from rendered snippet: %q", got)
+	}
+}
+
+func TestRenderSnippetTruncatesToMaxW(t *testing.T) {
+	long := strings.Repeat("a", 100)
+	got := renderSnippet(long, 10)
+	// Visible length (strip ANSI) should be ≤ 10 runes.
+	plain := stripSnippetTags(got, 999)
+	if len([]rune(plain)) > 10 {
+		t.Fatalf("snippet not truncated: len=%d > 10", len([]rune(plain)))
+	}
+}
+
+func TestStripSnippetTagsRemovesBoldMarkers(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"hello <b>world</b>", "hello world"},
+		{"<b>start</b> middle <b>end</b>", "start middle end"},
+		{"no tags here", "no tags here"},
+	}
+	for _, tc := range cases {
+		got := stripSnippetTags(tc.in, 999)
+		if got != tc.want {
+			t.Fatalf("stripSnippetTags(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// --- #6 Around search jump ---
+
+func TestAroundMsgsMsgCentresScroll(t *testing.T) {
+	chatID := "c1"
+	// 10 older + anchor + 10 newer = 21 messages; anchorIndex = 10.
+	msgs := make([]wireMsg, 21)
+	for i := range msgs {
+		msgs[i] = mkMsg(fmt.Sprintf("m%d", i), int64(i+1))
+	}
+	model := m{
+		status:       "ready",
+		mode:         "chat",
+		active:       chatID,
+		msgs:         map[string][]wireMsg{},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+	}
+	next, _ := model.Update(aroundMsgsMsg{chatID: chatID, msgs: msgs, anchorIndex: 10})
+	got := next.(m)
+
+	if len(got.msgs[chatID]) != 21 {
+		t.Fatalf("msgs count = %d, want 21", len(got.msgs[chatID]))
+	}
+	// newerCount = 21 - 10 - 1 = 10; scroll = 10 * 2 = 20.
+	if got.scroll != 20 {
+		t.Fatalf("scroll = %d, want 20", got.scroll)
+	}
+}
+
+func TestAroundMsgsMsgWithErrorShowsTopBar(t *testing.T) {
+	model := m{status: "ready", mode: "chat", active: "c1"}
+	next, cmd := model.Update(aroundMsgsMsg{chatID: "c1", err: fmt.Errorf("db error")})
+	_ = next
+	if cmd == nil {
+		t.Fatalf("error should produce a topbar cmd")
+	}
+}
+
+// --- #7 Unread polish ---
+
+func TestEndKeyClearsUnreadCount(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:   "ready",
+		mode:     "chat",
+		active:   chatID,
+		whitelist: map[string]string{},
+		scroll:   10,
+		chats: []chat{
+			{ID: chatID, UnreadCount: 5},
+		},
+		msgs:         map[string][]wireMsg{chatID: {mkMsg("m1", 1)}},
+		loadingOlder: map[string]bool{},
+		noMoreOlder:  map[string]bool{},
+	}
+	next, cmd := model.key(tea.KeyMsg{Type: tea.KeyEnd})
+	got := next.(m)
+
+	if got.chats[0].UnreadCount != 0 {
+		t.Fatalf("UnreadCount = %d, want 0 after End key", got.chats[0].UnreadCount)
+	}
+	if cmd == nil {
+		t.Fatalf("End key should produce commands (getMsgs + mark-read)")
+	}
+}
+
+func TestUnreadCountIncreasesOnIncomingMessage(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:    "ready",
+		mode:      "nav",
+		active:    "",
+		whitelist: map[string]string{},
+		chats:     []chat{{ID: chatID, UnreadCount: 0}},
+		msgs:      map[string][]wireMsg{},
+		flashUntil: map[string]time.Time{},
+		mainCache: &renderCache{},
+	}
+	var wm wireMsg
+	wm.Key.ID = "newmsg"
+	wm.Key.RemoteJID = chatID
+	wm.Key.FromMe = false
+	wm.MessageTimestamp = 100
+
+	next, _ := model.Update(wsEvtMsg{ok: true, evt: env{
+		Type:    "message",
+		Payload: func() json.RawMessage { b, _ := json.Marshal(wm); return b }(),
+	}})
+	got := next.(m)
+
+	var unread int
+	for _, ch := range got.chats {
+		if ch.ID == chatID {
+			unread = ch.UnreadCount
+		}
+	}
+	if unread != 1 {
+		t.Fatalf("UnreadCount = %d, want 1 after incoming message", unread)
+	}
+}
+
+func TestUnreadCountNotIncreasedForOwnMessages(t *testing.T) {
+	chatID := "c1"
+	model := m{
+		status:    "ready",
+		mode:      "nav",
+		active:    "",
+		whitelist: map[string]string{},
+		chats:     []chat{{ID: chatID, UnreadCount: 0}},
+		msgs:      map[string][]wireMsg{},
+		flashUntil: map[string]time.Time{},
+		mainCache: &renderCache{},
+	}
+	var wm wireMsg
+	wm.Key.ID = "sent"
+	wm.Key.RemoteJID = chatID
+	wm.Key.FromMe = true
+
+	next, _ := model.Update(wsEvtMsg{ok: true, evt: env{
+		Type:    "message",
+		Payload: func() json.RawMessage { b, _ := json.Marshal(wm); return b }(),
+	}})
+	got := next.(m)
+
+	for _, ch := range got.chats {
+		if ch.ID == chatID && ch.UnreadCount != 0 {
+			t.Fatalf("own message incremented UnreadCount to %d", ch.UnreadCount)
+		}
 	}
 }

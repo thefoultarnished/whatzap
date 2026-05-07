@@ -1113,3 +1113,71 @@ func dateSeparatorLine(label string, w int) string {
 	styled := dateSepStyle.Render(label)
 	return lipgloss.NewStyle().Width(w - 2).Align(lipgloss.Center).Render(styled)
 }
+
+// renderSnippet renders a search snippet that may contain <b>...</b> highlight
+// tags. Bold segments are rendered with the accent colour. The visible text is
+// truncated to maxW runes before rendering so the layout stays intact.
+func renderSnippet(snippet string, maxW int) string {
+	// Split on tag boundaries while preserving whether each segment is bold.
+	type seg struct {
+		text string
+		bold bool
+	}
+	var segs []seg
+	rest := snippet
+	for rest != "" {
+		open := strings.Index(rest, "<b>")
+		if open == -1 {
+			segs = append(segs, seg{rest, false})
+			break
+		}
+		if open > 0 {
+			segs = append(segs, seg{rest[:open], false})
+		}
+		rest = rest[open+3:]
+		close := strings.Index(rest, "</b>")
+		if close == -1 {
+			segs = append(segs, seg{rest, true})
+			break
+		}
+		segs = append(segs, seg{rest[:close], true})
+		rest = rest[close+4:]
+	}
+
+	// Truncate total visible width to maxW runes.
+	remaining := maxW
+	var out strings.Builder
+	for _, s := range segs {
+		runes := []rune(s.text)
+		if len(runes) > remaining {
+			runes = runes[:remaining]
+		}
+		if len(runes) == 0 {
+			continue
+		}
+		t := string(runes)
+		if s.bold {
+			out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(currentTheme.Accent)).Render(t))
+		} else {
+			out.WriteString(t)
+		}
+		remaining -= len(runes)
+		if remaining <= 0 {
+			break
+		}
+	}
+	return out.String()
+}
+
+// stripSnippetTags returns the visible text of a snippet with <b>...</b> tags
+// removed and truncated to maxW runes. Used for the reverse-video selected row
+// where bold styling would conflict with the highlight colour.
+func stripSnippetTags(snippet string, maxW int) string {
+	plain := strings.ReplaceAll(snippet, "<b>", "")
+	plain = strings.ReplaceAll(plain, "</b>", "")
+	runes := []rune(plain)
+	if len(runes) > maxW {
+		return string(runes[:maxW-1]) + "…"
+	}
+	return plain
+}

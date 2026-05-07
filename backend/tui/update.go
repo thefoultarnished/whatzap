@@ -32,20 +32,49 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, tea.Batch(openWS(x.wsURL, x.apiToken), postEmpty(x.client, x.baseURL+"/start", nil))
 	case wsOpenMsg:
 		if v.err != nil {
+			x.wsDisconnected = true
+			if x.wsReconnectDelay == 0 {
+				x.wsReconnectDelay = time.Second
+			}
+			delay := x.wsReconnectDelay
+			if x.wsReconnectDelay*2 < 30*time.Second {
+				x.wsReconnectDelay *= 2
+			} else {
+				x.wsReconnectDelay = 30 * time.Second
+			}
 			x.err = ""
 			if x.status == "ready" {
-				return x, tea.Batch(x.setTopBar("Connection failed: "+v.err.Error()), tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} }))
+				return x, x.setTopBar(fmt.Sprintf("Reconnecting in %s…", delay.Round(time.Second)))
 			}
-			x.status = "Error: " + v.err.Error()
-			return x, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} })
+			x.status = "Reconnecting…"
+			return x, tea.Tick(delay, func(time.Time) tea.Msg { return reconnectMsg{} })
 		}
+		// Successful (re)connect — reset backoff and clear disconnect state.
+		x.wsDisconnected = false
+		x.wsReconnectDelay = 0
 		x.ws, x.wsCh = v.conn, v.ch
 		return x, readWS(x.wsCh)
 	case reconnectMsg:
 		return x, openWS(x.wsURL, x.apiToken)
 	case wsEvtMsg:
 		if !v.ok {
-			return x, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return reconnectMsg{} })
+			x.wsDisconnected = true
+			if x.wsReconnectDelay == 0 {
+				x.wsReconnectDelay = time.Second
+			}
+			delay := x.wsReconnectDelay
+			if x.wsReconnectDelay*2 < 30*time.Second {
+				x.wsReconnectDelay *= 2
+			} else {
+				x.wsReconnectDelay = 30 * time.Second
+			}
+			if x.status == "ready" {
+				return x, tea.Batch(
+					x.setTopBar(fmt.Sprintf("Disconnected — reconnecting in %s…", delay.Round(time.Second))),
+					tea.Tick(delay, func(time.Time) tea.Msg { return reconnectMsg{} }),
+				)
+			}
+			return x, tea.Tick(delay, func(time.Time) tea.Msg { return reconnectMsg{} })
 		}
 		cmds := []tea.Cmd{readWS(x.wsCh)}
 		switch v.evt.Type {
@@ -59,7 +88,6 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			x.qrRaw = ""
 			cmds = append(cmds, getChats(x.client, x.baseURL), getContacts(x.client, x.baseURL), getWhitelist(x.client, x.baseURL))
 		case "chats:loaded":
-			cmds = append(cmds, getChats(x.client, x.baseURL))
 			if x.active != "" {
 				cmds = append(cmds, getMsgs(x.client, x.baseURL, x.active, 120))
 			}
@@ -302,6 +330,34 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		merged = append(merged, fresh...)
 		merged = append(merged, existing...)
 		x.msgs[v.chatID] = merged
+		if x.mainCache != nil {
+			x.mainCache.result = ""
+		}
+	case aroundMsgsMsg:
+		if v.err != nil {
+			return x, x.setTopBar(v.err.Error())
+		}
+		if len(v.msgs) == 0 {
+			return x, nil
+		}
+		x.msgs[v.chatID] = v.msgs
+		if x.loadingOlder == nil {
+			x.loadingOlder = map[string]bool{}
+		}
+		if x.noMoreOlder == nil {
+			x.noMoreOlder = map[string]bool{}
+		}
+		delete(x.loadingOlder, v.chatID)
+		// We don't know if there are more older pages without another query;
+		// allow lazy-load to discover by clearing noMoreOlder.
+		delete(x.noMoreOlder, v.chatID)
+		// Set scroll so anchor is roughly centred — messages after anchor are
+		// newer (lower index from bottom), each ~2 rows on average.
+		newerCount := len(v.msgs) - v.anchorIndex - 1
+		if newerCount < 0 {
+			newerCount = 0
+		}
+		x.scroll = newerCount * 2
 		if x.mainCache != nil {
 			x.mainCache.result = ""
 		}
@@ -1251,9 +1307,8 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if x.mainCache != nil {
 				x.mainCache.result = ""
 			}
-			// Fetch a window of messages around the hit. before=ts+1 puts the hit
-			// at the top of the page (most recent of the returned set).
-			return x, getMsgsBefore(x.client, x.baseURL, hit.ChatID, 100, hit.Timestamp+1)
+			// Fetch 100 messages centred on the hit (50 before + target + 50 after).
+			return x, getMsgsAround(x.client, x.baseURL, hit.ChatID, hit.MessageID, 100)
 		default:
 			if len(k.Runes) > 0 {
 				x.msgSearchInput += string(k.Runes)
@@ -1452,6 +1507,29 @@ func (x m) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			x.sidebarFocused = !x.sidebarFocused
 			x.leftInputFocused = false
 			return x, nil
+		case tea.KeyEnd:
+			if !x.sidebarFocused && x.active != "" {
+				x.scroll = 0
+				x.selectedMsgID = ""
+				if x.mainCache != nil {
+					x.mainCache.result = ""
+				}
+				// Clear local unread count immediately.
+				hadUnread := false
+				for i := range x.chats {
+					if x.chats[i].ID == x.active {
+						hadUnread = x.chats[i].UnreadCount > 0
+						x.chats[i].UnreadCount = 0
+						break
+					}
+				}
+				// Reload most-recent page and mark chat as read.
+				cmds := []tea.Cmd{getMsgs(x.client, x.baseURL, x.active, 120)}
+				if hadUnread {
+					cmds = append(cmds, postJSON(x.client, x.baseURL+"/messages/read", map[string]string{"chatId": x.active}, func([]byte) tea.Msg { return dataErr{} }))
+				}
+				return x, tea.Batch(cmds...)
+			}
 		case tea.KeyEsc:
 			if x.inputAllSelected {
 				x.inputAllSelected = false
@@ -2319,8 +2397,10 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 	}
 
 	// Clear the unread dot right away.
+	hadUnread := false
 	for i := range x.chats {
 		if x.chats[i].ID == x.active {
+			hadUnread = x.chats[i].UnreadCount > 0
 			x.chats[i].UnreadCount = 0
 			break
 		}
@@ -2333,9 +2413,9 @@ func (x m) openSelectedChat() (tea.Model, tea.Cmd) {
 		return x, nil
 	}
 
-	batch := []tea.Cmd{
-		getMsgs(x.client, x.baseURL, x.active, 120),
-		postJSON(x.client, x.baseURL+"/messages/read", map[string]string{"chatId": x.active}, func([]byte) tea.Msg { return dataErr{} }),
+	batch := []tea.Cmd{getMsgs(x.client, x.baseURL, x.active, 120)}
+	if hadUnread {
+		batch = append(batch, postJSON(x.client, x.baseURL+"/messages/read", map[string]string{"chatId": x.active}, func([]byte) tea.Msg { return dataErr{} }))
 	}
 	if titleCmd := x.refreshWindowTitleCmd(); titleCmd != nil {
 		batch = append(batch, titleCmd)

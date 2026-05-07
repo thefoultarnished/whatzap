@@ -124,8 +124,10 @@ type m struct {
 	active, mode, search, searchInput, input string
 	sel, scroll, sideScroll                  int
 	sidebarFocused                           bool
-	ws                                       *websocket.Conn
-	wsCh                                     <-chan env
+	ws                    *websocket.Conn
+	wsCh                  <-chan env
+	wsReconnectDelay      time.Duration // current backoff; 0 = not disconnected
+	wsDisconnected        bool
 	backend                                  *exec.Cmd
 	startedBackend                           bool
 	whitelist                                map[string]string // phone -> name, allowed=1 only (send gating)
@@ -227,6 +229,15 @@ type olderMsgsMsg struct {
 	hasMore   bool
 	requested int
 	err       error
+}
+
+// aroundMsgsMsg is returned after a search-jump fetch that centres on a
+// specific message. anchorIndex is the position of the target in msgs.
+type aroundMsgsMsg struct {
+	chatID      string
+	msgs        []wireMsg
+	anchorIndex int
+	err         error
 }
 
 type searchHit struct {

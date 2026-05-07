@@ -26,7 +26,7 @@ import (
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "test.db")+"?_pragma=journal_mode(WAL)")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "test.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1477,6 +1477,97 @@ func TestPurgeContactsWithNameEmptyNameIsNoOp(t *testing.T) {
 	_ = app.db.QueryRow(`SELECT name FROM chat_permissions WHERE phone = '111@s.whatsapp.net'`).Scan(&name)
 	if name != "Alice" {
 		t.Fatalf("untouched contact got modified: %q", name)
+	}
+}
+
+// --- Around endpoint tests ---
+
+func TestHandleMessagesAroundReturnsWindow(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	// Seed 10 messages ts 1..10; anchor on m5 (ts=5).
+	for i := 1; i <= 10; i++ {
+		_ = app.insertMessageToDB(chatID, WireMessage{
+			Key: WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID},
+			MessageTimestamp: int64(i),
+			Message: map[string]any{"conversation": fmt.Sprintf("msg %d", i)},
+		})
+	}
+
+	req := authorizedRequest(
+		httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&around=m5&limit=4", nil),
+		app,
+	)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages    []WireMessage `json:"messages"`
+		AnchorIndex int           `json:"anchorIndex"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// limit=4 → half=2; expect 2 older + anchor + 2 newer = 5 messages.
+	if len(body.Messages) != 5 {
+		t.Fatalf("messages = %d, want 5", len(body.Messages))
+	}
+	if body.Messages[body.AnchorIndex].Key.ID != "m5" {
+		t.Fatalf("anchor = %q, want m5", body.Messages[body.AnchorIndex].Key.ID)
+	}
+	if body.Messages[0].Key.ID != "m3" {
+		t.Fatalf("first = %q, want m3", body.Messages[0].Key.ID)
+	}
+	if body.Messages[4].Key.ID != "m7" {
+		t.Fatalf("last = %q, want m7", body.Messages[4].Key.ID)
+	}
+}
+
+func TestHandleMessagesAroundUnknownIDReturns404(t *testing.T) {
+	app := newTestApp(t)
+	req := authorizedRequest(
+		httptest.NewRequest(http.MethodGet, "/messages?chatId=c1&around=doesntexist", nil),
+		app,
+	)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestHandleMessagesAroundAtEdgeReturnsAvailableMessages(t *testing.T) {
+	app := newTestApp(t)
+	chatID := "c1"
+	// Only 3 messages; anchor on first (no older, 2 newer).
+	for i := 1; i <= 3; i++ {
+		_ = app.insertMessageToDB(chatID, WireMessage{
+			Key: WireKey{ID: fmt.Sprintf("m%d", i), RemoteJID: chatID},
+			MessageTimestamp: int64(i),
+			Message: map[string]any{},
+		})
+	}
+	req := authorizedRequest(
+		httptest.NewRequest(http.MethodGet, "/messages?chatId="+chatID+"&around=m1&limit=100", nil),
+		app,
+	)
+	rec := httptest.NewRecorder()
+	app.handler().ServeHTTP(rec, req)
+
+	var body struct {
+		Messages    []WireMessage `json:"messages"`
+		AnchorIndex int           `json:"anchorIndex"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	// 0 older + anchor + 2 newer = 3 total.
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(body.Messages))
+	}
+	if body.AnchorIndex != 0 {
+		t.Fatalf("anchorIndex = %d, want 0 (no older messages)", body.AnchorIndex)
 	}
 }
 
