@@ -109,7 +109,12 @@ func resolveClientAPIToken() (string, error) {
 
 func detectDirs() string {
 	cwd, _ := os.Getwd()
-	cands := []string{cwd, filepath.Join(cwd, ".."), filepath.Join(cwd, "..", "..")}
+	cands := []string{
+		cwd,
+		filepath.Join(cwd, ".."),
+		filepath.Join(cwd, "..", ".."),
+		"c:/Users/Nav/Downloads/personal/whatzap",
+	}
 	for _, c := range cands {
 		abs, _ := filepath.Abs(c)
 		if exists(filepath.Join(abs, "backend", "main.go")) {

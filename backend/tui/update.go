@@ -88,6 +88,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			x.qrRaw = ""
 			cmds = append(cmds, getChats(x.client, x.baseURL), getContacts(x.client, x.baseURL), getWhitelist(x.client, x.baseURL))
 		case "chats:loaded":
+			cmds = append(cmds, getChats(x.client, x.baseURL))
 			if x.active != "" {
 				cmds = append(cmds, getMsgs(x.client, x.baseURL, x.active, 120))
 			}
@@ -198,6 +199,8 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return x, tea.Batch(cmds...)
 	case dataErr:
+		x.syncingContacts = false
+		x.syncingGroups = false
 		if v.err != nil {
 			x.err = ""
 			if x.status == "ready" {
@@ -221,8 +224,10 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case topBarSetMsg:
 		return x, x.setTopBar(v.msg)
 	case syncContactsDoneMsg:
+		x.syncingContacts = false
 		return x, tea.Batch(x.setTopBar(v.msg), getChats(x.client, x.baseURL), getContacts(x.client, x.baseURL))
 	case syncGroupsDoneMsg:
+		x.syncingGroups = false
 		return x, tea.Batch(x.setTopBar(v.msg), getChats(x.client, x.baseURL))
 	case cursorBlinkMsg:
 		if time.Since(x.lastTypeTime) < 1*time.Second {
@@ -245,6 +250,7 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return x, nextCursorBlink()
 	case spinnerTickMsg:
 		x.spinnerFrame = (x.spinnerFrame + 1) % len(spinnerFrames)
+		x.shineFrame++
 		x.advanceSidebarHighlight()
 		x.advanceSidebarMarquee()
 		return x, nextSpinnerTick()
@@ -1850,11 +1856,13 @@ func (x *m) runCommand(txt string, includeGlobal bool) (tea.Cmd, bool) {
 		if x.demoMode {
 			return x.setTopBar("Demo mode: contacts already fake"), true
 		}
+		x.syncingContacts = true
 		return tea.Batch(x.setTopBar("Syncing contacts..."), syncContacts(x.client, x.baseURL)), true
 	case includeGlobal && txt == "/syncgroups":
 		if x.demoMode {
 			return x.setTopBar("Demo mode: groups already fake"), true
 		}
+		x.syncingGroups = true
 		return tea.Batch(x.setTopBar("Syncing groups..."), syncGroups(x.client, x.baseURL)), true
 	case txt == "/whitelistall":
 		if len(x.chats) == 0 {
@@ -2268,15 +2276,18 @@ func (x m) sidePaneWidth() int {
 }
 
 func (x m) currentSidebarMarqueeKey() string {
-	navActive := x.mode != "chat" || x.sidebarFocused
-	if !navActive {
-		return ""
-	}
 	f := x.filtered()
-	if len(f) == 0 || x.sel < 0 || x.sel >= len(f) {
+	if len(f) == 0 {
 		return ""
 	}
-	return x.sidebarTab + ":" + f[x.sel].ID
+	if x.mode != "chat" || x.sidebarFocused {
+		if x.sel >= 0 && x.sel < len(f) {
+			return x.sidebarTab + ":" + f[x.sel].ID
+		}
+	} else if x.active != "" {
+		return x.sidebarTab + ":" + x.active
+	}
+	return ""
 }
 
 func (x *m) syncSidebarHighlight() {
@@ -2304,13 +2315,45 @@ func (x *m) advanceSidebarHighlight() {
 
 func (x m) currentSidebarMarqueeLabel() (string, int) {
 	f := x.filtered()
-	if len(f) == 0 || x.sel < 0 || x.sel >= len(f) {
+	if len(f) == 0 {
+		return "", 0
+	}
+	var target chat
+	var targetIdx int
+	found := false
+	if x.mode != "chat" || x.sidebarFocused {
+		if x.sel >= 0 && x.sel < len(f) {
+			target = f[x.sel]
+			targetIdx = x.sel
+			found = true
+		}
+	} else if x.active != "" {
+		for i, c := range f {
+			if num(c.ID) == num(x.active) {
+				target = c
+				targetIdx = i
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
 		return "", 0
 	}
 	sideW := x.sidePaneWidth()
 	rowWidth := max(1, sideW-2)
 	nameWidth := max(1, rowWidth-1)
-	return fmt.Sprintf("%d. %s", x.sel+1, x.name(f[x.sel])), nameWidth
+	n := targetIdx + 1
+	var numLabel string
+	switch {
+	case n >= 100:
+		numLabel = fmt.Sprintf("%d ", n)
+	case n >= 10:
+		numLabel = fmt.Sprintf("%d. ", n)
+	default:
+		numLabel = fmt.Sprintf("0%d. ", n)
+	}
+	return numLabel + x.name(target), nameWidth
 }
 
 func (x *m) resetSidebarMarquee() {

@@ -128,6 +128,8 @@ type App struct {
 	needsBootstrapSync bool
 	historySyncing     bool
 	shuttingDown       bool
+	lidCacheMu sync.RWMutex
+	lidCache    map[string]string
 }
 
 const maxUploadBytes = 100 * 1024 * 1024
@@ -277,6 +279,7 @@ func NewApp() (*App, error) {
 		cacheDir:  cacheDir,
 		apiToken:  apiToken,
 		wsClients: map[*websocket.Conn]*wsClient{},
+		lidCache:  map[string]string{},
 		state: PersistedState{
 			Chats:    map[string]Chat{},
 			Contacts: map[string]Contact{},
@@ -301,9 +304,6 @@ func (a *App) initPersistentResources() error {
 
 	dbPath := filepath.Join(cacheDir, "store.db")
 
-	// Open rawDB first so we can set WAL mode before whatsmeow opens its connection.
-	// WAL is a file-level setting that persists, so whatsmeow's connection inherits it.
-	// This prevents "context deadline exceeded" from write-lock contention.
 	rawDB, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return err
@@ -312,8 +312,12 @@ func (a *App) initPersistentResources() error {
 		_ = rawDB.Close()
 		return err
 	}
+	if _, err := rawDB.Exec(`PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
+		_ = rawDB.Close()
+		return err
+	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", waLog.Stdout("db", "WARN", true))
+	container, err := sqlstore.New(context.Background(), "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", waLog.Stdout("db", "WARN", true))
 	if err != nil {
 		_ = rawDB.Close()
 		return err
@@ -482,7 +486,11 @@ func (a *App) bindEvents() {
 			a.mu.Lock()
 			a.connected = true
 			a.mu.Unlock()
-			_ = a.client.SendPresence(context.Background(), types.PresenceAvailable)
+			go func() {
+				presCtx, presCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer presCancel()
+				_ = a.client.SendPresence(presCtx, types.PresenceAvailable)
+			}()
 			a.broadcast(EventEnvelope{Type: "ready"})
 			a.broadcast(EventEnvelope{Type: "chats:loaded"})
 		case *events.Disconnected:
@@ -665,6 +673,25 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 	}
 	a.mu.Unlock()
 
+	var tx *sql.Tx
+	var err error
+	if a.db != nil {
+		tx, err = a.db.Begin()
+		if err != nil {
+			log.Printf("applyHistorySync: begin tx: %v", err)
+		}
+	}
+	defer func() {
+		if tx != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var exec dbExecutor = a.db
+	if tx != nil {
+		exec = tx
+	}
+
 	for _, conv := range data.GetConversations() {
 		chatID := a.historyConversationChatID(conv)
 		if chatID == "" || chatID == "status@broadcast" {
@@ -686,8 +713,16 @@ func (a *App) applyHistorySync(data *waHistorySync.HistorySync) {
 			if msg.Key.RemoteJID == "status@broadcast" {
 				continue
 			}
-			a.upsertMessage(msg.Key.RemoteJID, msg)
+			a.upsertMessageTx(exec, msg.Key.RemoteJID, msg)
 			changedChats = true
+		}
+	}
+
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			log.Printf("applyHistorySync: commit tx: %v", err)
+		} else {
+			tx = nil
 		}
 	}
 
@@ -744,23 +779,39 @@ func extractSearchableText(msg map[string]any) string {
 	return b.String()
 }
 
+type dbExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 func (a *App) upsertMessageFTS(chatID, msgID string, fromMe int, body string) {
-	if a.db == nil {
+	a.upsertMessageFTSTx(a.db, chatID, msgID, fromMe, body)
+}
+
+func (a *App) upsertMessageFTSTx(exec dbExecutor, chatID, msgID string, fromMe int, body string) {
+	if exec == nil {
 		return
 	}
-	if _, err := a.db.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ? AND from_me = ?`, chatID, msgID, fromMe); err != nil {
+	if _, err := exec.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ? AND from_me = ?`, chatID, msgID, fromMe); err != nil {
 		log.Printf("upsertMessageFTS delete: %v", err)
 		return
 	}
 	if body == "" {
 		return
 	}
-	if _, err := a.db.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, chatID, msgID, fromMe, body); err != nil {
+	if _, err := exec.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, chatID, msgID, fromMe, body); err != nil {
 		log.Printf("upsertMessageFTS insert: %v", err)
 	}
 }
 
 func (a *App) insertMessageToDB(chatID string, msg WireMessage) error {
+	return a.insertMessageToDBTx(a.db, chatID, msg)
+}
+
+func (a *App) insertMessageToDBTx(exec dbExecutor, chatID string, msg WireMessage) error {
+	if exec == nil {
+		return fmt.Errorf("no db executor")
+	}
 	id := msg.Key.ID
 	if id == "" {
 		id = dedupeKey(msg)
@@ -773,13 +824,13 @@ func (a *App) insertMessageToDB(chatID string, msg WireMessage) error {
 	if err != nil {
 		return err
 	}
-	if _, err := a.db.Exec(`
+	if _, err := exec.Exec(`
 		INSERT OR REPLACE INTO messages (id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, chatID, fromMe, msg.Key.Participant, msg.MessageTimestamp, msg.PushName, msg.ReceiptStatus, string(msgJSON), msg.MediaProto); err != nil {
 		return err
 	}
-	a.upsertMessageFTS(chatID, id, fromMe, extractSearchableText(msg.Message))
+	a.upsertMessageFTSTx(exec, chatID, id, fromMe, extractSearchableText(msg.Message))
 	return nil
 }
 
@@ -855,6 +906,13 @@ func (a *App) loadContactsFromDB() (map[string]Contact, error) {
 }
 
 func (a *App) upsertMessage(chatID string, msg WireMessage) {
+	a.upsertMessageTx(a.db, chatID, msg)
+}
+
+func (a *App) upsertMessageTx(exec dbExecutor, chatID string, msg WireMessage) {
+	if exec == nil {
+		return
+	}
 	chatID = a.canonicalizeChatID(chatID)
 	if chatID == "" {
 		return
@@ -864,7 +922,6 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 		msg.Key.Participant = a.canonicalizeChatID(msg.Key.Participant)
 	}
 
-	// Determine if this is a new message (for unread counting) before inserting.
 	id := msg.Key.ID
 	if id == "" {
 		id = dedupeKey(msg)
@@ -874,10 +931,10 @@ func (a *App) upsertMessage(chatID string, msg WireMessage) {
 		fromMe = 1
 	}
 	var existing int
-	_ = a.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id = ? AND from_me = ?`, chatID, id, fromMe).Scan(&existing)
+	_ = exec.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat_id = ? AND id = ? AND from_me = ?`, chatID, id, fromMe).Scan(&existing)
 	isNew := existing == 0
 
-	if err := a.insertMessageToDB(chatID, msg); err != nil {
+	if err := a.insertMessageToDBTx(exec, chatID, msg); err != nil {
 		log.Printf("upsertMessage: db write: %v", err)
 	}
 
@@ -1014,27 +1071,50 @@ func (a *App) startSession() error {
 			return nil
 		}
 	}
-	if err := a.client.Connect(); err != nil {
-		a.mu.Lock()
-		a.started = false
-		a.mu.Unlock()
-		return err
-	}
-	a.recanonicalizeState()
-	a.mu.RLock()
-	bootstrap := a.needsBootstrapSync
-	a.mu.RUnlock()
-	if bootstrap {
-		go a.bootstrapFromStore()
-	}
-	go a.refreshGroupMetadata()
+	// Connect in a goroutine so /start returns immediately.
+	// The TUI learns the session is ready via the WS "ready" event.
+	go func() {
+		if err := a.client.Connect(); err != nil {
+			a.mu.Lock()
+			a.started = false
+			a.mu.Unlock()
+			log.Printf("startSession: connect failed: %v", err)
+			return
+		}
+		a.recanonicalizeState()
+		a.mu.RLock()
+		bootstrap := a.needsBootstrapSync
+		a.mu.RUnlock()
+		if bootstrap {
+			go a.bootstrapFromStore()
+		}
+		go a.refreshGroupMetadata()
+	}()
 	return nil
 }
 
 func (a *App) recanonicalizeState() {
+	// Copy state under lock, then do slow LID lookups outside the lock so
+	// that the Connected event handler is never blocked on a.mu.
+	a.mu.RLock()
+	stateCopy := PersistedState{
+		Chats:    make(map[string]Chat, len(a.state.Chats)),
+		Contacts: make(map[string]Contact, len(a.state.Contacts)),
+	}
+	for k, v := range a.state.Chats {
+		stateCopy.Chats[k] = v
+	}
+	for k, v := range a.state.Contacts {
+		stateCopy.Contacts[k] = v
+	}
+	a.mu.RUnlock()
+
+	a.migrateStateCanonicalIDs(&stateCopy)
+
 	a.mu.Lock()
-	a.migrateStateCanonicalIDs(&a.state)
+	a.state = stateCopy
 	a.mu.Unlock()
+
 	a.persistState()
 	a.broadcast(EventEnvelope{Type: "contacts:updated"})
 	a.broadcast(EventEnvelope{Type: "chats:loaded"})
@@ -1044,6 +1124,14 @@ func (a *App) refreshGroupMetadata() int {
 	if a == nil || a.client == nil || !a.client.IsConnected() || !a.client.IsLoggedIn() {
 		return 0
 	}
+	a.mu.RLock()
+	db := a.db
+	shuttingDown := a.shuttingDown
+	a.mu.RUnlock()
+	if db == nil || shuttingDown {
+		return 0
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -1054,6 +1142,10 @@ func (a *App) refreshGroupMetadata() int {
 
 	changed := 0
 	a.mu.Lock()
+	if a.shuttingDown || a.db == nil {
+		a.mu.Unlock()
+		return 0
+	}
 	for _, g := range groups {
 		if g == nil || g.JID.IsEmpty() {
 			continue
@@ -1229,9 +1321,7 @@ func (a *App) handleChats(w http.ResponseWriter, r *http.Request) {
 		if c.Name == "" && a.client != nil && a.client.Store != nil && a.client.Store.LIDs != nil {
 			if jid, err := types.ParseJID(c.ID); err == nil && jid.Server == types.DefaultUserServer {
 				if lid, err := types.ParseJID(jid.User + "@lid"); err == nil {
-					ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
-					pn, err := a.client.Store.LIDs.GetPNForLID(ctx, lid)
-					cancel()
+					pn, err := a.getPNForLID(lid)
 					if err == nil && pn.User != "" {
 						pnID := canonicalChatID(pn.String())
 						if ct, ok := contacts[pnID]; ok {
@@ -1600,6 +1690,9 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		msgs = append(msgs, msg)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleMessages rows err: %v", err)
+	}
 	hasMore := len(msgs) > limit
 	if hasMore {
 		msgs = msgs[:limit]
@@ -1647,13 +1740,14 @@ func (a *App) handleMessagesAround(w http.ResponseWriter, chatID, msgID string, 
 			older = append(older, msg)
 		}
 	}
+	if err := olderRows.Err(); err != nil {
+		log.Printf("handleMessagesAround olderRows err: %v", err)
+	}
 	_ = olderRows.Close()
-	// Reverse older (came DESC, want chronological).
 	for i, j := 0, len(older)-1; i < j; i, j = i+1, j-1 {
 		older[i], older[j] = older[j], older[i]
 	}
 
-	// Anchor message itself.
 	anchorRows, err := a.db.Query(
 		`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
 		 FROM messages WHERE chat_id = ? AND id = ? AND from_me = ?`,
@@ -1669,9 +1763,11 @@ func (a *App) handleMessagesAround(w http.ResponseWriter, chatID, msgID string, 
 			anchor = append(anchor, msg)
 		}
 	}
+	if err := anchorRows.Err(); err != nil {
+		log.Printf("handleMessagesAround anchorRows err: %v", err)
+	}
 	_ = anchorRows.Close()
 
-	// Newer messages (after anchor, exclusive).
 	newerRows, err := a.db.Query(
 		`SELECT id, chat_id, from_me, participant, ts, push_name, receipt, message_json, media_proto
 		 FROM messages WHERE chat_id = ? AND ts > ?
@@ -1687,6 +1783,9 @@ func (a *App) handleMessagesAround(w http.ResponseWriter, chatID, msgID string, 
 		if msg, err := scanMessageRow(newerRows); err == nil {
 			newer = append(newer, msg)
 		}
+	}
+	if err := newerRows.Err(); err != nil {
+		log.Printf("handleMessagesAround newerRows err: %v", err)
 	}
 	_ = newerRows.Close()
 
@@ -1767,19 +1866,22 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var (
 			cID, mID, snip string
-			fromMeStr      string
+			fromMe         int
 			ts             int64
 		)
-		if err := rows.Scan(&cID, &mID, &fromMeStr, &snip, &ts); err != nil {
+		if err := rows.Scan(&cID, &mID, &fromMe, &snip, &ts); err != nil {
 			continue
 		}
 		results = append(results, searchHit{
 			ChatID:    cID,
 			MessageID: mID,
-			FromMe:    fromMeStr == "1",
+			FromMe:    fromMe == 1,
 			Timestamp: ts,
 			Snippet:   snip,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleSearch rows err: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
@@ -1790,6 +1892,22 @@ func (a *App) requireConnectedClient(w http.ResponseWriter) bool {
 		return false
 	}
 	return true
+}
+
+func (a *App) isChatAllowed(chatID string) (bool, error) {
+	if a.db == nil {
+		return false, fmt.Errorf("db unavailable")
+	}
+	phone := phoneFromJID(chatID)
+	var allowed int
+	err := a.db.QueryRow(`SELECT allowed FROM chat_permissions WHERE phone = ?`, phone).Scan(&allowed)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return allowed == 1, nil
 }
 
 func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
@@ -1825,9 +1943,18 @@ func (a *App) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	allowed, err := a.isChatAllowed(req.ChatID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, "chat not whitelisted")
+		return
+	}
+
 	var msg *waE2E.Message
 	if req.ReplyToMsgID != "" {
-		// build quoted message stub for ContextInfo
 		quotedMsg := &waE2E.Message{Conversation: proto.String(req.ReplyToText)}
 		participant := req.ReplyToParticipant
 		if participant == "" {
@@ -1908,6 +2035,16 @@ func (a *App) handleSendFile(w http.ResponseWriter, r *http.Request) {
 	jid, err := types.ParseJID(req.ChatID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid chatId")
+		return
+	}
+
+	allowed, err := a.isChatAllowed(req.ChatID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !allowed {
+		writeErr(w, http.StatusForbidden, "chat not whitelisted")
 		return
 	}
 
@@ -2013,11 +2150,15 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 
 	senderToIDs := make(map[string][]types.MessageID)
 	if unreadToMark > 0 {
+		limitToMark := unreadToMark
+		if limitToMark > 100 {
+			limitToMark = 100
+		}
 		rows, err := a.db.Query(`
 			SELECT id, participant, chat_id FROM messages
 			WHERE chat_id = ? AND from_me = 0 AND id != ''
 			ORDER BY ts DESC LIMIT ?
-		`, req.ChatID, unreadToMark)
+		`, req.ChatID, limitToMark)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -2030,6 +2171,9 @@ func (a *App) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 					sender = cid
 				}
 				senderToIDs[sender] = append(senderToIDs[sender], types.MessageID(id))
+			}
+			if err := rows.Err(); err != nil {
+				log.Printf("handleMarkRead rows err: %v", err)
 			}
 		}
 	}
@@ -2158,9 +2302,27 @@ func (a *App) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Remove from DB
-	_, _ = a.db.Exec(`DELETE FROM messages WHERE chat_id = ? AND id = ?`, req.ChatID, req.MessageID)
-	_, _ = a.db.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ?`, req.ChatID, req.MessageID)
+	
+	if a.db != nil {
+		tx, err := a.db.Begin()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM messages WHERE chat_id = ? AND id = ?`, req.ChatID, req.MessageID); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM messages_fts WHERE chat_id = ? AND msg_id = ?`, req.ChatID, req.MessageID); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	a.persistState()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -2546,43 +2708,61 @@ func (a *App) backfillFTS() {
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&msgCount); err != nil || msgCount == 0 {
 		return
 	}
-	rows, err := a.db.Query(`SELECT id, chat_id, from_me, message_json FROM messages`)
-	if err != nil {
-		log.Printf("backfillFTS scan: %v", err)
-		return
-	}
+
 	type ftsRow struct {
 		chatID, msgID, body string
 		fromMe              int
 	}
-	// Drain all rows first so the SELECT cursor is closed before we start writing.
-	// Mixing Query + Exec on a tightly-pooled DB can deadlock otherwise.
-	var pending []ftsRow
-	for rows.Next() {
-		var id, chatID, msgJSON string
-		var fromMe int
-		if err := rows.Scan(&id, &chatID, &fromMe, &msgJSON); err != nil {
-			continue
-		}
-		var m map[string]any
-		_ = json.Unmarshal([]byte(msgJSON), &m)
-		body := extractSearchableText(m)
-		if body == "" {
-			continue
-		}
-		pending = append(pending, ftsRow{chatID: chatID, msgID: id, fromMe: fromMe, body: body})
-	}
-	_ = rows.Close()
 
-	indexed := 0
-	for _, r := range pending {
-		if _, err := a.db.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, r.chatID, r.msgID, r.fromMe, r.body); err != nil {
-			continue
+	limit := 1000
+	offset := 0
+	for {
+		rows, err := a.db.Query(`SELECT id, chat_id, from_me, message_json FROM messages LIMIT ? OFFSET ?`, limit, offset)
+		if err != nil {
+			log.Printf("backfillFTS scan query: %v", err)
+			break
 		}
-		indexed++
-	}
-	if indexed > 0 {
-		log.Printf("backfillFTS: indexed %d messages", indexed)
+		var pending []ftsRow
+		for rows.Next() {
+			var id, chatID, msgJSON string
+			var fromMe int
+			if err := rows.Scan(&id, &chatID, &fromMe, &msgJSON); err != nil {
+				continue
+			}
+			var m map[string]any
+			_ = json.Unmarshal([]byte(msgJSON), &m)
+			body := extractSearchableText(m)
+			if body == "" {
+				continue
+			}
+			pending = append(pending, ftsRow{chatID: chatID, msgID: id, fromMe: fromMe, body: body})
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("backfillFTS rows err: %v", err)
+		}
+		_ = rows.Close()
+
+		if len(pending) == 0 {
+			break
+		}
+
+		tx, err := a.db.Begin()
+		if err != nil {
+			log.Printf("backfillFTS tx: %v", err)
+			break
+		}
+		for _, r := range pending {
+			_, _ = tx.Exec(`INSERT INTO messages_fts (chat_id, msg_id, from_me, body) VALUES (?, ?, ?, ?)`, r.chatID, r.msgID, r.fromMe, r.body)
+		}
+		if err := tx.Commit(); err != nil {
+			log.Printf("backfillFTS commit: %v", err)
+			break
+		}
+
+		if len(pending) < limit {
+			break
+		}
+		offset += limit
 	}
 }
 
@@ -2593,7 +2773,7 @@ func (a *App) vacuumDB() {
 		return
 	}
 	go func() {
-		if _, err := a.db.Exec(`VACUUM`); err != nil {
+		if _, err := a.db.Exec(`PRAGMA incremental_vacuum(100)`); err != nil {
 			log.Printf("vacuum: %v", err)
 		}
 	}()
@@ -2639,7 +2819,7 @@ func (a *App) purgeOwnPushNameFromContacts() {
 
 func (a *App) loadState() {
 	// One-time backfill: index all messages into FTS if it's empty but messages exist.
-	a.backfillFTS()
+	go a.backfillFTS()
 	// Defensive: clear any chat_permissions rows that have the local user's own
 	// push name as the contact name (legacy bug — see purgeOwnPushNameFromContacts).
 	a.purgeOwnPushNameFromContacts()
@@ -2779,10 +2959,11 @@ func (a *App) persistState() {
 }
 
 func (a *App) persistStateWithErr() error {
-	if a.db == nil {
+	a.mu.RLock()
+	if a.shuttingDown || a.db == nil {
+		a.mu.RUnlock()
 		return nil
 	}
-	a.mu.RLock()
 	chats := make([]Chat, 0, len(a.state.Chats))
 	for _, c := range a.state.Chats {
 		chats = append(chats, c)
@@ -2791,18 +2972,32 @@ func (a *App) persistStateWithErr() error {
 	for _, c := range a.state.Contacts {
 		contacts = append(contacts, c)
 	}
+	db := a.db
 	a.mu.RUnlock()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	for _, chat := range chats {
-		if err := a.upsertChatToDB(chat); err != nil {
+		if _, err := tx.Exec(`
+			INSERT OR REPLACE INTO chats (id, name, subject, conv_ts, unread_count)
+			VALUES (?, ?, ?, ?, ?)
+		`, chat.ID, chat.Name, chat.Subject, chat.ConversationTimestamp, chat.UnreadCount); err != nil {
 			return err
 		}
 	}
 	for _, contact := range contacts {
-		if err := a.upsertContactToDB(contact); err != nil {
+		if _, err := tx.Exec(`
+			INSERT OR REPLACE INTO contacts (id, name, notify)
+			VALUES (?, ?, ?)
+		`, contact.ID, contact.Name, contact.Notify); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 
@@ -2818,8 +3013,8 @@ func (a *App) reconcileChatTimestampsFromDB() {
 	}
 	defer rows.Close()
 
+	changed := false
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	for rows.Next() {
 		var chatID string
 		var maxTS int64
@@ -2831,7 +3026,16 @@ func (a *App) reconcileChatTimestampsFromDB() {
 			chat.ID = chatID
 			chat.ConversationTimestamp = maxTS
 			a.state.Chats[chatID] = chat
+			changed = true
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("reconcileChatTimestampsFromDB rows err: %v", err)
+	}
+	a.mu.Unlock()
+
+	if changed {
+		a.persistState()
 	}
 }
 
@@ -2891,6 +3095,37 @@ func canonicalChatID(chatID string) string {
 	return chatID
 }
 
+func (a *App) getPNForLID(lid types.JID) (types.JID, error) {
+	if a == nil || a.client == nil || a.client.Store == nil || a.client.Store.LIDs == nil {
+		return types.JID{}, fmt.Errorf("store unavailable")
+	}
+	key := lid.String()
+	a.lidCacheMu.RLock()
+	cachedVal, ok := a.lidCache[key]
+	a.lidCacheMu.RUnlock()
+	if ok {
+		if cachedVal == "" {
+			return types.JID{}, fmt.Errorf("not found (cached)")
+		}
+		return types.ParseJID(cachedVal)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	pn, err := a.client.Store.LIDs.GetPNForLID(ctx, lid)
+	cancel()
+
+	a.lidCacheMu.Lock()
+	if err == nil && pn.User != "" {
+		a.lidCache[key] = pn.String()
+		a.lidCache[pn.String()] = pn.String()
+	} else {
+		a.lidCache[key] = ""
+	}
+	a.lidCacheMu.Unlock()
+
+	return pn, err
+}
+
 func (a *App) canonicalizeChatID(chatID string) string {
 	base := canonicalChatID(chatID)
 	if base == "" || strings.HasSuffix(base, "@g.us") || base == "status@broadcast" {
@@ -2909,18 +3144,14 @@ func (a *App) canonicalizeChatID(chatID string) string {
 	}
 	jid = jid.ToNonAD()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-
 	switch jid.Server {
 	case types.HiddenUserServer:
-		if pn, err := a.client.Store.LIDs.GetPNForLID(ctx, jid); err == nil && pn.User != "" {
+		if pn, err := a.getPNForLID(jid); err == nil && pn.User != "" {
 			return canonicalChatID(pn.String())
 		}
 	case types.DefaultUserServer:
-		// fixing old cache keys that used LID digits for @s.whatsapp.net
 		if possibleLID, err := types.ParseJID(jid.User + "@lid"); err == nil {
-			if pn, err := a.client.Store.LIDs.GetPNForLID(ctx, possibleLID); err == nil && pn.User != "" {
+			if pn, err := a.getPNForLID(possibleLID); err == nil && pn.User != "" {
 				return canonicalChatID(pn.String())
 			}
 		}
@@ -3057,6 +3288,9 @@ func (a *App) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&e.Phone, &e.Name, &e.Allowed); err == nil {
 			result = append(result, e)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleGetWhitelist rows err: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"contacts": result})
 }

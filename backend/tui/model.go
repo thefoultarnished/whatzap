@@ -122,6 +122,8 @@ type m struct {
 	msgSearchLoading                         bool
 	msgSearchErr                             string
 	active, mode, search, searchInput, input string
+	syncingContacts, syncingGroups           bool
+	shineFrame                               int
 	sel, scroll, sideScroll                  int
 	sidebarFocused                           bool
 	ws                    *websocket.Conn

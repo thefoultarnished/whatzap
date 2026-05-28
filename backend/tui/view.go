@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +65,11 @@ func (x m) View() string {
 		} else if strings.HasPrefix(strings.ToLower(x.status), "logged out") {
 			statusBody = accentStyle.Copy().Bold(false).Render(x.status)
 			hint = mutedStyle.Render("Restart and scan a QR code to sign in again")
+		} else if strings.HasPrefix(x.status, "Error:") {
+			errMsg := strings.TrimPrefix(x.status, "Error:")
+			errMsg = strings.TrimSpace(errMsg)
+			statusBody = lipgloss.NewStyle().Foreground(red).Bold(true).Render("Error: " + errMsg)
+			hint = mutedStyle.Render("Press ctrl+c to exit, then re-run whatzap")
 		} else {
 			statusBody = accentStyle.Copy().Bold(false).Render(spinnerFrames[x.spinnerFrame] + " Connecting your session...")
 			progress := mutedStyle.Render("Syncing chats, contacts, and recent messages")
@@ -331,6 +337,12 @@ func (x m) renderHeaderContainer(contentW, leftW int) string {
 	centerContent := " "
 	if x.topBarMsg != "" && x.topBarShown > 0 {
 		centerContent = " " + purpleStyle.Render(graphemeSliceN(x.topBarMsg, x.topBarShown))
+	} else if x.syncingContacts {
+		shineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+		centerContent = " " + renderShine(spinnerFrames[x.spinnerFrame]+" syncing contacts...", purpleStyle, shineStyle, x.shineFrame)
+	} else if x.syncingGroups {
+		shineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+		centerContent = " " + renderShine(spinnerFrames[x.spinnerFrame]+" syncing groups...", purpleStyle, shineStyle, x.shineFrame)
 	} else if x.active != "" {
 		displayName := x.nameFor(x.active)
 		nameLimit := 22
@@ -708,23 +720,29 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 		hasUnread := c.UnreadCount > 0
 		isSel := i == x.sel
 		navActive := x.mode != "chat" || x.sidebarFocused
-		isActive := x.active == c.ID
+		isActive := x.active != "" && num(x.active) == num(c.ID)
 		highlighted := isSel && navActive
 		_, whitelisted := x.whitelist[num(c.ID)]
 
 		rowBase := lipgloss.NewStyle()
+		bg := lipgloss.Color("")
+		fg := lipgloss.Color("")
 		if highlighted {
-			bg := brand
+			bg = brand
+			fg = buttonInk
 			if !whitelisted {
-				bg = amber
+				bg = red
+				fg = lipgloss.Color("15")
 			}
-			rowBase = rowBase.Background(bg).Foreground(buttonInk).Bold(isSel && navActive)
+			rowBase = rowBase.Background(bg).Foreground(fg).Bold(isSel && navActive)
 		} else if isActive {
-			activeBg := sidebarActiveBg
+			bg = sidebarActiveBg
+			fg = buttonInk
 			if !whitelisted {
-				activeBg = sidebarActiveUnreadBg
+				bg = red
+				fg = lipgloss.Color("15")
 			}
-			rowBase = rowBase.Background(activeBg).Foreground(accent)
+			rowBase = rowBase.Background(bg).Foreground(fg)
 		}
 
 		rowWidth := max(1, w-2)
@@ -741,7 +759,8 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 			numLabel = fmt.Sprintf("0%d. ", n)
 		}
 		nameText := numLabel + x.name(c)
-		if highlighted && graphemeCount(nameText) > nameWidth {
+		isMarqueeRow := highlighted || (isActive && x.mode == "chat" && !x.sidebarFocused)
+		if isMarqueeRow && graphemeCount(nameText) > nameWidth {
 			offset := x.sidebarMarqueeOffset
 			maxOffset := graphemeCount(nameText) - nameWidth
 			if offset < 0 {
@@ -757,11 +776,24 @@ func (x m) renderUserList(f []chat, start, end, w int) []string {
 		if highlighted {
 			nameText = strings.Repeat(" ", x.sidebarHighlightInset) + nameText
 		}
-		content := padRight(nameText, nameWidth)
-		if hasUnread {
-			content += lipgloss.NewStyle().Foreground(amber).Render("\u25cf")
+		var content string
+		if highlighted || isActive {
+			contentStyle := lipgloss.NewStyle().Foreground(fg).Background(bg)
+			if highlighted {
+				contentStyle = contentStyle.Bold(isSel && navActive)
+			}
+			content = contentStyle.Render(padRight(nameText, nameWidth))
 		} else {
-			content += " "
+			content = padRight(nameText, nameWidth)
+		}
+		unreadStyle := lipgloss.NewStyle()
+		if highlighted || isActive {
+			unreadStyle = unreadStyle.Background(bg)
+		}
+		if hasUnread {
+			content += unreadStyle.Foreground(amber).Render("\u25cf")
+		} else {
+			content += unreadStyle.Render(" ")
 		}
 		line := rowBase.Width(rowWidth).Render(content)
 		lines = append(lines, line)
@@ -785,20 +817,55 @@ func wrapMessageLines(msgBody string, availableW int, fromMe bool, senderName st
 	return strings.Split(wrapTextWithPrefix(msgBody, availableW, prefixWidth), "\n")
 }
 
+var urlRegex = regexp.MustCompile(`https?://[^\s]+`)
+
+func renderTextWithLinks(s string, baseStyle lipgloss.Style, original ...string) string {
+	matches := urlRegex.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return baseStyle.Render(s)
+	}
+	var origURLs []string
+	if len(original) > 0 && original[0] != "" {
+		origURLs = urlRegex.FindAllString(original[0], -1)
+	}
+	linkStyle := baseStyle.Copy().
+		Foreground(lipgloss.Color("#89b4fa")).
+		Underline(true)
+	var sb strings.Builder
+	lastIdx := 0
+	for _, match := range matches {
+		sb.WriteString(baseStyle.Render(s[lastIdx:match[0]]))
+		matchText := s[match[0]:match[1]]
+		targetURL := matchText
+		prefix := strings.TrimRight(matchText, ".")
+		for _, oURL := range origURLs {
+			if strings.HasPrefix(oURL, prefix) {
+				targetURL = oURL
+				break
+			}
+		}
+		sb.WriteString("\x1b]8;;" + targetURL + "\x1b\\" + linkStyle.Render(matchText) + "\x1b]8;;\x1b\\")
+		lastIdx = match[1]
+	}
+	sb.WriteString(baseStyle.Render(s[lastIdx:]))
+	return sb.String()
+}
+
 func renderStyledMessageText(
 	ln string,
 	bodyStyle lipgloss.Style,
 	tokenStyle lipgloss.Style,
 	isMediaMsg bool,
+	original string,
 ) string {
 	if isMediaMsg && strings.HasPrefix(ln, "[") {
 		if end := strings.Index(ln, "]"); end > 0 {
 			token := ln[:end+1]
 			rest := ln[end+1:]
-			return tokenStyle.Render(token) + bodyStyle.Render(rest)
+			return tokenStyle.Render(token) + renderTextWithLinks(rest, bodyStyle, original)
 		}
 	}
-	return bodyStyle.Render(ln)
+	return renderTextWithLinks(ln, bodyStyle, original)
 }
 
 func outgoingMessageIndent(paneW int, blockW int, fromMe bool) string {
@@ -1109,7 +1176,8 @@ func (x m) renderMain(w, h int) string {
 				if !qFromMe && strings.TrimSpace(qSender) == "" {
 					qSender = num(qParticipant)
 				}
-				qText = strings.ReplaceAll(qText, "\n", " ")
+				origQuote := strings.ReplaceAll(qText, "\n", " ")
+				qText = origQuote
 				if len([]rune(qText)) > 50 {
 					qText = string([]rune(qText)[:50]) + "..."
 				}
@@ -1123,9 +1191,9 @@ func (x m) renderMain(w, h int) string {
 				quoteSuffix := " ─╮ "
 				quoteStyled = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quotePrefix) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
-					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)).Render(qText)
+					renderTextWithLinks(qText, applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)), origQuote)
 				quoteStyledRight = applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor).Bold(true)).Render(qSender+": ") +
-					applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)).Render(qText) +
+					renderTextWithLinks(qText, applySelectedBG(lipgloss.NewStyle().Foreground(qTextColor)), origQuote) +
 					applySelectedBG(lipgloss.NewStyle().Foreground(qSenderColor)).Render(quoteSuffix)
 				quotePlainRight = qSender + ": " + qText + quoteSuffix
 			}
@@ -1181,12 +1249,17 @@ func (x m) renderMain(w, h int) string {
 					Foreground(receivedName)).
 					Render(receivedMsgIcon+" "))
 			} else if !msg.Key.FromMe && i > 0 && !isGroup {
-				iconPad := strings.Repeat(" ", runeDisplayWidth(receivedMsgIcon+" "))
+				var iconPad string
+				if receivedMsgIcon == "│" || receivedMsgIcon == "┃" || receivedMsgIcon == "║" {
+					iconPad = receivedMsgIcon + " "
+				} else {
+					iconPad = strings.Repeat(" ", runeDisplayWidth(receivedMsgIcon+" "))
+				}
 				lineParts = append(lineParts, applyBodyBG(lipgloss.NewStyle().
 					Foreground(receivedName)).
 					Render(iconPad))
 			}
-			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg))
+			lineParts = append(lineParts, renderStyledMessageText(ln, bodyStyle, tokenStyle, isMediaMsg, msgBody))
 			if msg.Key.FromMe && i == len(wrapped)-1 {
 				// Float timestamp to the right of the last line if it fits,
 				// otherwise it goes on its own line below.
@@ -1493,4 +1566,23 @@ func padRight(s string, n int) string {
 		return string(r[:n])
 	}
 	return s + strings.Repeat(" ", n-len(r))
+}
+
+func renderShine(text string, baseStyle, shineStyle lipgloss.Style, frame int) string {
+	runes := []rune(text)
+	n := len(runes)
+	if n == 0 {
+		return ""
+	}
+	cycle := n + 6
+	f := frame % cycle
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		if i >= f-3 && i < f {
+			sb.WriteString(shineStyle.Render(string(runes[i])))
+		} else {
+			sb.WriteString(baseStyle.Render(string(runes[i])))
+		}
+	}
+	return sb.String()
 }

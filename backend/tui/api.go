@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -91,11 +92,21 @@ func ensureBackend(c *http.Client, base, dir, apiToken string) tea.Cmd {
 			}
 			return initMsg{}
 		}
-		goBin := "go"
+		var cmd *exec.Cmd
+		binName := "backend"
 		if runtime.GOOS == "windows" {
-			goBin = "go.exe"
+			binName = "backend.exe"
 		}
-		cmd := exec.Command(goBin, "run", ".")
+		binPath := filepath.Join(dir, binName)
+		if exists(binPath) {
+			cmd = exec.Command(binPath)
+		} else {
+			goBin := "go"
+			if runtime.GOOS == "windows" {
+				goBin = "go.exe"
+			}
+			cmd = exec.Command(goBin, "run", ".")
+		}
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), apiTokenEnvVar+"="+apiToken)
 		logBuf := &limitedBuffer{limit: backendStartupLogLimit}
@@ -612,7 +623,9 @@ func apiTokenFromURL(base string) string {
 }
 
 func syncContacts(c *http.Client, base string) tea.Cmd {
-	return postEmpty(c, base+"/sync/contacts", func(raw []byte) tea.Msg {
+	longClient := *c
+	longClient.Timeout = 5 * time.Minute
+	return postEmpty(&longClient, base+"/sync/contacts", func(raw []byte) tea.Msg {
 		var out struct {
 			Updated      int `json:"updated"`
 			Enriched     int `json:"enriched"`
@@ -633,7 +646,9 @@ func syncContacts(c *http.Client, base string) tea.Cmd {
 }
 
 func syncGroups(c *http.Client, base string) tea.Cmd {
-	return postEmpty(c, base+"/sync/groups", func(raw []byte) tea.Msg {
+	longClient := *c
+	longClient.Timeout = 5 * time.Minute
+	return postEmpty(&longClient, base+"/sync/groups", func(raw []byte) tea.Msg {
 		var out struct {
 			Updated int `json:"updated"`
 			Total   int `json:"total"`

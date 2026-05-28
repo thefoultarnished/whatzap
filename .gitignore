@@ -1,6 +1,8 @@
 # User-specific files
 notes/
 .claude/
+.commandcode/
+screenshots/
 AGENTS.md
 TODO.md
 CONTEXT.md

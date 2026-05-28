@@ -21,6 +21,9 @@ var pointerList = []struct {
 	{"⦿", "Target"},
 	{"❯", "Chevron"},
 	{"⁕", "Asterisk"},
+	{"│", "Connected Line"},
+	{"┃", "Thick Connected Line"},
+	{"║", "Double Connected Line"},
 }
 
 func buildPointerPickerItems() []pickerItem {

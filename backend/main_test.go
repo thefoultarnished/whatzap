@@ -1709,3 +1709,40 @@ func TestExtractSearchableTextQuotedText(t *testing.T) {
 		t.Fatalf("expected both main and quoted text, got %q", got)
 	}
 }
+
+func TestIsChatAllowed(t *testing.T) {
+	app := newTestApp(t)
+	allowed, err := app.isChatAllowed("15551230001@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("isChatAllowed: %v", err)
+	}
+	if allowed {
+		t.Fatalf("expected not allowed by default")
+	}
+
+	_, err = app.db.Exec(`INSERT INTO chat_permissions (phone, name, allowed) VALUES ('15551230001', 'Test User', 1)`)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	allowed, err = app.isChatAllowed("15551230001@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("isChatAllowed: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected allowed after whitelisting")
+	}
+
+	_, err = app.db.Exec(`UPDATE chat_permissions SET allowed = 0 WHERE phone = '15551230001'`)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	allowed, err = app.isChatAllowed("15551230001@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("isChatAllowed: %v", err)
+	}
+	if allowed {
+		t.Fatalf("expected not allowed after blacklisting")
+	}
+}
